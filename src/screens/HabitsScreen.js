@@ -1,0 +1,576 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity,
+  Modal, TextInput, KeyboardAvoidingView, Platform, Alert, Animated,
+  PanResponder, TouchableWithoutFeedback, Keyboard, Image,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import { useApp } from '../context/AppContext';
+import TimePicker from '../components/TimePicker';
+import { scheduleHabitReminder } from '../utils/notifications';
+import { lightImpact, mediumImpact } from '../utils/haptics';
+
+const ICONS = ['⭐', '🎯', '💪', '🧠', '✍️', '🎨', '🚶', '🛁', '🌿', '❤️', '💧', '🏃', '📚', '🧘', '😴', '🥗', '🍎', '☕', '🎵', '🌅'];
+const BLANK = { name: '', icon: '⭐', type: 'daily', volumeGoal: 3, customIconUri: null };
+const DEFAULT_REMINDER = { enabled: false, hour12: 9, minute: 0, ampm: 'AM' };
+
+function formatReminder(reminder) {
+  if (!reminder?.enabled) return null;
+  const { hour12, minute, ampm } = reminder;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${ampm}`;
+}
+
+function IconPicker({ selected, onSelect, customIconUri, onCustomIcon, theme }) {
+  return (
+    <View style={styles.iconGrid}>
+      {ICONS.map(icon => (
+        <TouchableOpacity
+          key={icon}
+          style={[
+            styles.iconBtn,
+            { backgroundColor: theme.bg, borderColor: selected === icon && !customIconUri ? theme.primary : theme.border },
+            selected === icon && !customIconUri && { backgroundColor: theme.primaryLight },
+          ]}
+          onPress={() => onSelect(icon)}
+        >
+          <Text style={styles.iconBtnText}>{icon}</Text>
+        </TouchableOpacity>
+      ))}
+      {/* Camera / Gallery button */}
+      <TouchableOpacity
+        style={[
+          styles.iconBtn,
+          { backgroundColor: theme.bg, borderColor: customIconUri ? theme.primary : theme.border },
+          customIconUri && { backgroundColor: theme.primaryLight },
+        ]}
+        onPress={onCustomIcon}
+      >
+        {customIconUri ? (
+          <Image source={{ uri: customIconUri }} style={{ width: 28, height: 28, borderRadius: 4 }} />
+        ) : (
+          <Ionicons name="add-outline" size={26} color={theme.textMuted} />
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const VOLUME_MAX_OPTIONS = [
+  { label: '10', max: 10 },
+  { label: '25', max: 25 },
+  { label: '100', max: 100 },
+];
+
+function VolumeSlider({ value, max, onValueChange, theme }) {
+  const layoutRef = useRef({ x: 0, width: 1 });
+  const maxRef = useRef(max);
+  const onChangeRef = useRef(onValueChange);
+  const ref = useRef(null);
+
+  useEffect(() => { maxRef.current = max; }, [max]);
+  useEffect(() => { onChangeRef.current = onValueChange; }, [onValueChange]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: (_, gs) => {
+        const { x, width } = layoutRef.current;
+        const ratio = Math.max(0, Math.min(1, (gs.x0 - x) / width));
+        onChangeRef.current(Math.max(2, Math.round(ratio * (maxRef.current - 2) + 2)));
+      },
+      onPanResponderMove: (_, gs) => {
+        const { x, width } = layoutRef.current;
+        const ratio = Math.max(0, Math.min(1, (gs.moveX - x) / width));
+        onChangeRef.current(Math.max(2, Math.round(ratio * (maxRef.current - 2) + 2)));
+      },
+    })
+  ).current;
+
+  const fillRatio = (value - 2) / Math.max(1, max - 2);
+
+  return (
+    <View
+      ref={ref}
+      onLayout={() => ref.current?.measure((fx, fy, w, h, px) => { layoutRef.current = { x: px, width: Math.max(w, 1) }; })}
+      {...panResponder.panHandlers}
+      style={styles.sliderTrackArea}
+    >
+      <View style={[styles.sliderTrack, { backgroundColor: theme.border }]}>
+        <View style={[styles.sliderFill, { width: `${fillRatio * 100}%`, backgroundColor: theme.primary }]} />
+      </View>
+      <View style={[styles.sliderThumb, { left: `${fillRatio * 100}%`, backgroundColor: theme.primary }]} />
+    </View>
+  );
+}
+
+function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme }) {
+  const translateY = useRef(new Animated.Value(700)).current;
+  const [internalVisible, setInternalVisible] = useState(false);
+  const [volMax, setVolMax] = useState(10);
+
+  useEffect(() => {
+    if (visible) {
+      setInternalVisible(true);
+      translateY.setValue(700);
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, tension: 65, friction: 11 }).start();
+    } else {
+      animateClose(null);
+    }
+  }, [visible, animateClose]);
+
+  const animateClose = useCallback((cb) => {
+    Animated.timing(translateY, { toValue: 700, duration: 220, useNativeDriver: true }).start(() => {
+      setInternalVisible(false);
+      cb?.();
+    });
+  }, [translateY]);
+
+  const handleVolMaxChange = (newMax) => {
+    setVolMax(newMax);
+    if (form.volumeGoal > newMax) setForm(f => ({ ...f, volumeGoal: newMax }));
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, gs) => {
+        if (gs.dy > 0) translateY.setValue(gs.dy);
+      },
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dy > 80) {
+          Animated.timing(translateY, { toValue: 700, duration: 220, useNativeDriver: true }).start(() => {
+            setInternalVisible(false);
+            onClose();
+          });
+        } else {
+          Animated.spring(translateY, { toValue: 0, useNativeDriver: true, tension: 80 }).start();
+        }
+      },
+    })
+  ).current;
+
+  const handlePickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      const cam = await ImagePicker.requestCameraPermissionsAsync();
+      if (cam.status !== 'granted') {
+        Alert.alert('Permission needed', 'Allow photo access to use a custom icon.');
+        return;
+      }
+    }
+
+    Alert.alert('Custom Icon', 'Choose a source', [
+      {
+        text: 'Camera',
+        onPress: async () => {
+          const result = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+          if (!result.canceled) setForm(f => ({ ...f, customIconUri: result.assets[0].uri, icon: null }));
+        },
+      },
+      {
+        text: 'Photo Library',
+        onPress: async () => {
+          const result = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+          if (!result.canceled) setForm(f => ({ ...f, customIconUri: result.assets[0].uri, icon: null }));
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleClose = () => animateClose(onClose);
+
+  return (
+    <Modal visible={internalVisible} animationType="none" transparent onRequestClose={handleClose}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <View style={styles.overlayBg} />
+        </TouchableWithoutFeedback>
+
+        <Animated.View
+          style={[styles.sheet, { backgroundColor: theme.surface, transform: [{ translateY }] }]}
+        >
+          {/* Drag handle */}
+          <View {...panResponder.panHandlers} style={styles.dragHandleArea}>
+            <View style={[styles.dragHandle, { backgroundColor: theme.border }]} />
+          </View>
+
+          {/* Header with X */}
+          <View style={styles.sheetHeader}>
+            <Text style={[styles.sheetTitle, { color: theme.text }]}>
+              {editingId ? 'Edit Habit' : 'New Habit'}
+            </Text>
+            <TouchableOpacity onPress={handleClose} style={styles.sheetCloseBtn}>
+              <Ionicons name="close" size={24} color={theme.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: 8 }}
+          >
+            <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+              <View>
+                <Text style={[styles.label, { color: theme.textMuted }]}>Icon</Text>
+                <IconPicker
+                  selected={form.icon}
+                  onSelect={icon => setForm(f => ({ ...f, icon, customIconUri: null }))}
+                  customIconUri={form.customIconUri}
+                  onCustomIcon={handlePickImage}
+                  theme={theme}
+                />
+
+                <Text style={[styles.label, { color: theme.textMuted }]}>Name</Text>
+                <TextInput
+                  style={[styles.input, { borderColor: theme.border, color: theme.text, backgroundColor: theme.bg }]}
+                  placeholder="e.g. Walk 10,000 steps"
+                  placeholderTextColor={theme.textMuted}
+                  value={form.name}
+                  onChangeText={name => setForm(f => ({ ...f, name }))}
+                  returnKeyType="done"
+                  onSubmitEditing={Keyboard.dismiss}
+                />
+
+                <Text style={[styles.label, { color: theme.textMuted }]}>Type</Text>
+                <View style={styles.typeRow}>
+                  {['daily', 'volume'].map(t => (
+                    <TouchableOpacity
+                      key={t}
+                      style={[
+                        styles.typeBtn,
+                        { borderColor: form.type === t ? theme.primary : theme.border },
+                        form.type === t && { backgroundColor: theme.primaryLight },
+                      ]}
+                      onPress={() => setForm(f => ({ ...f, type: t }))}
+                    >
+                      <Text style={[styles.typeBtnText, { color: form.type === t ? theme.primary : theme.textMuted }]}>
+                        {t === 'daily' ? '✓  Once a day' : '🔢  Volume goal'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {form.type === 'volume' && (
+                  <>
+                    <Text style={[styles.label, { color: theme.textMuted }]}>Times per day — {form.volumeGoal}</Text>
+                    <View style={styles.volMaxRow}>
+                      {VOLUME_MAX_OPTIONS.map(opt => (
+                        <TouchableOpacity
+                          key={opt.max}
+                          style={[
+                            styles.volMaxBtn,
+                            { borderColor: volMax === opt.max ? theme.primary : theme.border },
+                            volMax === opt.max && { backgroundColor: theme.primaryLight },
+                          ]}
+                          onPress={() => handleVolMaxChange(opt.max)}
+                        >
+                          <Text style={[styles.volMaxBtnText, { color: volMax === opt.max ? theme.primary : theme.textMuted }]}>
+                            Max {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <VolumeSlider
+                      value={form.volumeGoal}
+                      max={volMax}
+                      onValueChange={v => setForm(f => ({ ...f, volumeGoal: v }))}
+                      theme={theme}
+                    />
+                    <View style={styles.sliderLabels}>
+                      <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>2</Text>
+                      <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>{volMax}</Text>
+                    </View>
+                  </>
+                )}
+              </View>
+            </TouchableWithoutFeedback>
+
+            {/* Save button at bottom of scroll */}
+            <TouchableOpacity
+              style={[styles.saveBtn, { backgroundColor: form.name.trim() ? theme.primary : theme.border, marginTop: 12 }]}
+              onPress={onSave}
+              disabled={!form.name.trim()}
+            >
+              <Text style={styles.saveBtnText}>{editingId ? 'Save Changes' : 'Add Habit'}</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </Animated.View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+export default function HabitsScreen() {
+  const {
+    habits, addHabit, updateHabit, deleteHabit, theme,
+    pendingHabitLinkChallenge, setPendingHabitLinkChallenge, linkHabitToChallenge,
+    setModalOpen, settings, updateSettings,
+  } = useApp();
+  const [modalVisible, setModalVisible] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(BLANK);
+  const [reminderTarget, setReminderTarget] = useState(null);
+
+  // Track modal open for swipe lock
+  useEffect(() => { setModalOpen(modalVisible || !!reminderTarget); }, [modalVisible, reminderTarget]);
+
+  // Open Add Habit modal when navigated here from Challenge with a pending link
+  useEffect(() => {
+    if (pendingHabitLinkChallenge) {
+      const t = setTimeout(() => {
+        setEditingId(null);
+        setForm(BLANK);
+        setModalVisible(true);
+      }, 400);
+      return () => clearTimeout(t);
+    }
+  }, [pendingHabitLinkChallenge]);
+
+  const openAdd = () => {
+    lightImpact();
+    setEditingId(null);
+    setForm(BLANK);
+    setModalVisible(true);
+  };
+
+  const openEdit = (habit) => {
+    setEditingId(habit.id);
+    setForm({ name: habit.name, icon: habit.icon, type: habit.type, volumeGoal: habit.volumeGoal, customIconUri: habit.customIconUri ?? null });
+    setModalVisible(true);
+  };
+
+  const handleSave = () => {
+    if (!form.name.trim()) return;
+    mediumImpact();
+    const habit = {
+      ...form,
+      name: form.name.trim(),
+      volumeGoal: form.type === 'daily' ? 1 : Math.max(1, Number(form.volumeGoal) || 1),
+    };
+    if (editingId) {
+      updateHabit(editingId, habit);
+    } else {
+      const newId = addHabit(habit);
+      // If we came from Challenge screen, link this new habit to that challenge
+      if (pendingHabitLinkChallenge && newId) {
+        linkHabitToChallenge(pendingHabitLinkChallenge, newId);
+        setPendingHabitLinkChallenge(null);
+      }
+    }
+    setModalVisible(false);
+  };
+
+  const handleDelete = (id, name) => {
+    lightImpact();
+    Alert.alert('Delete Habit', `Remove "${name}"? This can't be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => deleteHabit(id) },
+    ]);
+  };
+
+  const handleReminderSave = async (habitId, reminderData) => {
+    const updatedReminder = { ...reminderData, enabled: true };
+    const habit = habits.find(h => h.id === habitId);
+    updateHabit(habitId, { reminder: updatedReminder });
+    await scheduleHabitReminder({ ...habit, reminder: updatedReminder });
+
+    // Sync into settings.reminders so the entry appears in the Settings screen
+    const reminderId = `habit-${habitId}`;
+    const newEntry = {
+      id: reminderId,
+      label: habit.name,
+      time: { hour12: updatedReminder.hour12, minute: updatedReminder.minute, ampm: updatedReminder.ampm },
+      enabled: true,
+      habitId: habitId,
+    };
+    const existing = (settings.reminders || []);
+    const idx = existing.findIndex(r => r.id === reminderId);
+    const newReminders = idx >= 0
+      ? existing.map((r, i) => i === idx ? newEntry : r)
+      : [...existing, newEntry];
+    updateSettings({ reminders: newReminders });
+
+    setReminderTarget(null);
+  };
+
+  const handleReminderToggleOff = async (habit) => {
+    updateHabit(habit.id, { reminder: { ...habit.reminder, enabled: false } });
+    await scheduleHabitReminder({ ...habit, reminder: { enabled: false } });
+
+    // Mirror the disabled state in settings.reminders
+    const reminderId = `habit-${habit.id}`;
+    const existing = settings.reminders || [];
+    if (existing.some(r => r.id === reminderId)) {
+      updateSettings({ reminders: existing.map(r => r.id === reminderId ? { ...r, enabled: false } : r) });
+    }
+  };
+
+  const targetHabit = reminderTarget ? habits.find(h => h.id === reminderTarget) : null;
+
+  return (
+    <SafeAreaView style={[styles.safe, { backgroundColor: theme.bg }]}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <View style={styles.headerRow}>
+          <Text style={[styles.heading, { color: theme.text }]}>My Habits</Text>
+          <TouchableOpacity style={[styles.addBtn, { backgroundColor: theme.primary }]} onPress={openAdd}>
+            <Text style={styles.addBtnText}>+ Add</Text>
+          </TouchableOpacity>
+        </View>
+
+        {habits.length === 0 ? (
+          <View style={[styles.empty, { borderColor: theme.border }]}>
+            <Text style={styles.emptyEmoji}>🌱</Text>
+            <Text style={[styles.emptyTitle, { color: theme.text }]}>No habits yet</Text>
+            <Text style={[styles.emptyBody, { color: theme.textMuted }]}>Tap "+ Add" to create your first habit.</Text>
+          </View>
+        ) : (
+          habits.map(habit => {
+            const reminderTime = formatReminder(habit.reminder);
+            const reminderOn = habit.reminder?.enabled;
+            return (
+              <View key={habit.id} style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                {habit.customIconUri ? (
+                  <Image source={{ uri: habit.customIconUri }} style={styles.rowIconImage} />
+                ) : (
+                  <Text style={styles.rowIcon}>{habit.icon}</Text>
+                )}
+                <View style={styles.rowInfo}>
+                  <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>{habit.name}</Text>
+                  <View style={styles.rowMeta}>
+                    <View style={[styles.typePill, { backgroundColor: theme.primaryLight }]}>
+                      <Text style={[styles.typePillText, { color: theme.primary }]}>
+                        {habit.type === 'daily' ? 'Daily' : `${habit.volumeGoal}× / day`}
+                      </Text>
+                    </View>
+                    {reminderTime && (
+                      <View style={[styles.reminderPill, { backgroundColor: theme.primaryLight }]}>
+                        <Text style={[styles.reminderPillText, { color: theme.primary }]}>🔔 {reminderTime}</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+
+                {/* Bell icon - outline style */}
+                <TouchableOpacity
+                  style={styles.bellBtn}
+                  onPress={() => { lightImpact(); reminderOn ? handleReminderToggleOff(habit) : setReminderTarget(habit.id); }}
+                >
+                  <Ionicons
+                    name={reminderOn ? 'notifications' : 'notifications-outline'}
+                    size={20}
+                    color={reminderOn ? theme.primary : theme.textMuted}
+                  />
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(habit)}>
+                  <Text style={[styles.editBtnText, { color: theme.textMuted }]}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(habit.id, habit.name)}>
+                  <Text style={styles.deleteBtnText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
+
+      <HabitModal
+        visible={modalVisible}
+        editingId={editingId}
+        form={form}
+        setForm={setForm}
+        onSave={handleSave}
+        onClose={() => {
+          setModalVisible(false);
+          setPendingHabitLinkChallenge(null); // cancel link if user dismisses
+        }}
+        theme={theme}
+      />
+
+      {targetHabit && (
+        <TimePicker
+          visible={true}
+          hour12={targetHabit.reminder?.hour12 ?? DEFAULT_REMINDER.hour12}
+          minute={targetHabit.reminder?.minute ?? DEFAULT_REMINDER.minute}
+          ampm={targetHabit.reminder?.ampm ?? DEFAULT_REMINDER.ampm}
+          onClose={() => setReminderTarget(null)}
+          onSave={(t) => handleReminderSave(targetHabit.id, t)}
+          theme={theme}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  scroll: { padding: 24, paddingBottom: 40 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  heading: { fontSize: 28, fontWeight: 'bold' },
+  addBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  addBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  row: {
+    flexDirection: 'row', alignItems: 'center', borderRadius: 14, borderWidth: 1,
+    padding: 14, marginBottom: 10,
+  },
+  rowIcon: { fontSize: 26, marginRight: 12 },
+  rowIconImage: { width: 32, height: 32, borderRadius: 6, marginRight: 12 },
+  rowInfo: { flex: 1 },
+  rowName: { fontSize: 15, fontWeight: '600' },
+  rowMeta: { flexDirection: 'row', marginTop: 4, gap: 6, flexWrap: 'wrap' },
+  typePill: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
+  typePillText: { fontSize: 12, fontWeight: '600' },
+  reminderPill: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
+  reminderPillText: { fontSize: 12, fontWeight: '600' },
+  bellBtn: { padding: 6, marginRight: 2 },
+  editBtn: { padding: 6, marginRight: 4 },
+  editBtnText: { fontSize: 13, fontWeight: '600' },
+  deleteBtn: { padding: 6 },
+  deleteBtnText: { fontSize: 14, color: '#EF4444', fontWeight: 'bold' },
+  empty: {
+    borderWidth: 2, borderStyle: 'dashed', borderRadius: 16,
+    padding: 36, alignItems: 'center', marginTop: 24,
+  },
+  emptyEmoji: { fontSize: 40, marginBottom: 12 },
+  emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  emptyBody: { fontSize: 14, textAlign: 'center' },
+  overlay: { flex: 1, justifyContent: 'flex-end' },
+  overlayBg: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  sheet: {
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 24, paddingBottom: 40, maxHeight: '90%',
+  },
+  dragHandleArea: { alignItems: 'center', paddingVertical: 12 },
+  dragHandle: { width: 40, height: 4, borderRadius: 2 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  sheetTitle: { fontSize: 20, fontWeight: 'bold' },
+  sheetCloseBtn: { padding: 4 },
+  label: { fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
+  iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 },
+  iconBtn: { width: 44, height: 44, borderRadius: 10, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  iconBtnText: { fontSize: 22 },
+  input: { borderWidth: 1.5, borderRadius: 12, padding: 14, fontSize: 16, marginBottom: 20 },
+  typeRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  typeBtn: { flex: 1, padding: 12, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
+  typeBtnText: { fontSize: 14, fontWeight: '600' },
+  volMaxRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  volMaxBtn: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, alignItems: 'center' },
+  volMaxBtnText: { fontSize: 12, fontWeight: '700' },
+  sliderTrackArea: { height: 44, justifyContent: 'center', marginBottom: 4 },
+  sliderTrack: { height: 6, borderRadius: 3 },
+  sliderFill: { height: 6, borderRadius: 3 },
+  sliderThumb: {
+    position: 'absolute', width: 22, height: 22, borderRadius: 11,
+    marginLeft: -11, top: 11,
+    elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2, shadowRadius: 2,
+  },
+  sliderLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
+  sliderLabelText: { fontSize: 11 },
+  saveBtn: { marginTop: 12, padding: 16, borderRadius: 14, alignItems: 'center' },
+  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+});
