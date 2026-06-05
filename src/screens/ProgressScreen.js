@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView, Dimensions,
-  TouchableOpacity, Modal, Animated, PanResponder,
+  TouchableOpacity, Modal, Animated, PanResponder, ActivityIndicator,
 } from 'react-native';
 import { useApp } from '../context/AppContext';
 import { lightImpact, mediumImpact } from '../utils/haptics';
+import { fetchReflection } from '../services/aiCoaching';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CHART_H = 150;
@@ -25,7 +26,7 @@ function cellSize(cfg) {
 
 // ─── Bar chart (always 7 days) ────────────────────────────────────────────────
 
-function BarChart({ data, labels, theme, onBarPress }) {
+function BarChart({ data, labels, theme, onBarPress, futureFlags }) {
   return (
     <View style={{ marginTop: 8 }}>
       <View style={{ flexDirection: 'row', height: CHART_H }}>
@@ -51,15 +52,18 @@ function BarChart({ data, labels, theme, onBarPress }) {
         {/* Bars */}
         <View style={{ flex: 1, height: CHART_H, flexDirection: 'row', alignItems: 'flex-end', gap: 4 }}>
           {data.map((val, i) => {
+            const isFuture = futureFlags?.[i];
             const barH = Math.max((val / 100) * CHART_H, 3);
             return (
               <TouchableOpacity
                 key={i}
                 style={{ flex: 1, height: CHART_H, justifyContent: 'flex-end', alignItems: 'center' }}
-                onPress={() => onBarPress?.(i, val)}
-                activeOpacity={0.7}
+                onPress={() => !isFuture && onBarPress?.(i, val)}
+                activeOpacity={isFuture ? 1 : 0.7}
               >
-                <View style={{ width: '70%', height: barH, backgroundColor: theme.primary, borderRadius: 4 }} />
+                {!isFuture && (
+                  <View style={{ width: '70%', height: barH, backgroundColor: theme.primary, borderRadius: 4 }} />
+                )}
               </TouchableOpacity>
             );
           })}
@@ -80,18 +84,18 @@ function BarChart({ data, labels, theme, onBarPress }) {
 // ─── Heatmap cell ─────────────────────────────────────────────────────────────
 
 function HeatmapCell({ day, size, gap, theme, onPress }) {
-  const { completed, total } = day;
+  const { completed, total, future } = day;
   let bg = theme.progressBarBg;
-  if (total > 0 && completed >= total) bg = theme.primary;
-  else if (total > 0 && completed > 0) bg = PARTIAL_COLOR;
+  if (!future && total > 0 && completed >= total) bg = theme.primary;
+  else if (!future && total > 0 && completed > 0) bg = PARTIAL_COLOR;
 
   return (
     <TouchableOpacity
-      onPress={() => total > 0 && onPress?.(day)}
-      activeOpacity={total > 0 ? 0.7 : 1}
+      onPress={() => !future && total > 0 && onPress?.(day)}
+      activeOpacity={!future && total > 0 ? 0.7 : 1}
       style={{ marginRight: gap, marginBottom: gap }}
     >
-      <View style={{ width: size, height: size, borderRadius: Math.max(3, size * 0.18), backgroundColor: bg }} />
+      <View style={{ width: size, height: size, borderRadius: Math.max(3, size * 0.18), backgroundColor: bg, opacity: future ? 0.3 : 1 }} />
     </TouchableOpacity>
   );
 }
@@ -208,10 +212,57 @@ function BarTooltip({ label, value, onClose, theme }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ProgressScreen() {
-  const { getLastNDays, getOverallStreak, habits, theme, completions } = useApp();
+  const { getLastNDays, getOverallStreak, habits, theme, completions, accountCreatedAt, displayName, todayStr, isDevEmail } = useApp();
   const [heatPeriodIdx, setHeatPeriodIdx] = useState(0);
   const [selectedDay, setSelectedDay] = useState(null);
   const [tooltipInfo, setTooltipInfo] = useState(null);
+
+  const [reflectionPeriod, setReflectionPeriod] = useState('weekly');
+  const [reflectionMessage, setReflectionMessage] = useState(null);
+  const [reflectionLoading, setReflectionLoading] = useState(false);
+  const [reflectionError, setReflectionError] = useState(false);
+  const [reflectionGeneratedAt, setReflectionGeneratedAt] = useState(null);
+
+  // Days since account creation (0 = creation day).
+  // Uses todayStr() so dev date offsets are reflected in the thresholds.
+  const accountAgeDays = useMemo(() => {
+    if (!accountCreatedAt) return 999;
+    return Math.round((Date.parse(todayStr()) - Date.parse(accountCreatedAt)) / 86400000);
+  }, [accountCreatedAt, todayStr]);
+
+  // Use only complete prior days (exclude today) for AI coaching thresholds.
+  // accountAgeDays = 0 on creation day, 1 on the next day, etc.
+  const canGenerateWeekly  = accountAgeDays >= 7;
+  const canGenerateMonthly = accountAgeDays >= 30;
+  const daysUntilWeekly    = Math.max(0, 7  - accountAgeDays);
+  const daysUntilMonthly   = Math.max(0, 30 - accountAgeDays);
+
+  const reflectionLocked = reflectionPeriod === 'weekly' ? !canGenerateWeekly : !canGenerateMonthly;
+
+  // Dev users pass the offset-aware date so the reflection window shifts with the simulated date.
+  // All other users always use the real date.
+  const excludeDate = isDevEmail ? todayStr() : new Date().toISOString().split('T')[0];
+
+  const handleGenerateReflection = useCallback(async () => {
+    if (habits.length === 0) return;
+    if (reflectionPeriod === 'weekly'  && !canGenerateWeekly)  return;
+    if (reflectionPeriod === 'monthly' && !canGenerateMonthly) return;
+    setReflectionLoading(true);
+    setReflectionMessage(null);
+    setReflectionError(false);
+    lightImpact();
+    try {
+      const data = await fetchReflection(reflectionPeriod, accountCreatedAt, displayName, excludeDate);
+      if (data?.message) {
+        setReflectionMessage(data.message);
+        setReflectionGeneratedAt(data.generatedAt ?? new Date().toISOString());
+      }
+    } catch {
+      setReflectionError(true);
+    } finally {
+      setReflectionLoading(false);
+    }
+  }, [habits.length, reflectionPeriod, canGenerateWeekly, canGenerateMonthly, accountCreatedAt, excludeDate]);
 
   const heatCfg = PERIOD_CONFIG[heatPeriodIdx];
 
@@ -237,9 +288,12 @@ export default function ProgressScreen() {
     [last7]
   );
 
+  const futureFlagsBar = useMemo(() => last7.map(d => !!d.future), [last7]);
+
   const handleBarPress = (i, val) => {
-    lightImpact();
     const d = last7[i];
+    if (d.future) return;
+    lightImpact();
     const date = new Date(d.date + 'T00:00:00');
     const label = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
     setTooltipInfo({ label, value: val });
@@ -277,7 +331,7 @@ export default function ProgressScreen() {
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <Text style={[styles.cardTitle, { color: theme.text }]}>Habits Completed — Weekly</Text>
           <Text style={[styles.cardHint, { color: theme.textMuted }]}>Tap a bar for details</Text>
-          <BarChart data={chartData} labels={chartLabels} theme={theme} onBarPress={handleBarPress} />
+          <BarChart data={chartData} labels={chartLabels} theme={theme} onBarPress={handleBarPress} futureFlags={futureFlagsBar} />
         </View>
 
         {/* Heatmap with period toggle */}
@@ -319,38 +373,102 @@ export default function ProgressScreen() {
 
           <Text style={[styles.cardHint, { color: theme.textMuted }]}>Tap a cell for details</Text>
 
-          {/* Grid: 7d uses a single flex row; 30d/90d use a wrapped fixed-size grid */}
-          {heatCfg.days === 7 ? (
-            <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
-              {heatDays.map(d => {
-                let bg = theme.progressBarBg;
-                if (d.total > 0 && d.completed >= d.total) bg = theme.primary;
-                else if (d.total > 0 && d.completed > 0) bg = PARTIAL_COLOR;
+          {/* Grid: fixed-size cells for all periods, left-aligned so count grows from 1→N */}
+          <View style={[styles.heatGrid, { marginRight: -heatCfg.gap }]}>
+            {heatDays.map(d => (
+              <HeatmapCell
+                key={d.date}
+                day={d}
+                size={cs}
+                gap={heatCfg.gap}
+                theme={theme}
+                onPress={handleDayPress}
+              />
+            ))}
+          </View>
+        </View>
+        {/* AI Reflection */}
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>✨ AI Reflection</Text>
+            <View style={styles.periodToggle}>
+              {[{ label: '7d', value: 'weekly' }, { label: '30d', value: 'monthly' }].map(({ label, value }) => {
+                const locked = value === 'weekly' ? !canGenerateWeekly : !canGenerateMonthly;
+                const active = reflectionPeriod === value && !locked;
                 return (
                   <TouchableOpacity
-                    key={d.date}
-                    onPress={() => d.total > 0 && handleDayPress(d)}
-                    activeOpacity={d.total > 0 ? 0.7 : 1}
-                    style={{ flex: 1, aspectRatio: 1 }}
+                    key={value}
+                    style={[
+                      styles.periodBtn,
+                      { borderColor: theme.border },
+                      active && { backgroundColor: theme.primary, borderColor: theme.primary },
+                      locked && { opacity: 0.4 },
+                    ]}
+                    onPress={() => {
+                      lightImpact();
+                      setReflectionPeriod(value);
+                      setReflectionMessage(null);
+                      setReflectionError(false);
+                    }}
                   >
-                    <View style={{ flex: 1, borderRadius: 6, backgroundColor: bg }} />
+                    <Text style={[styles.periodBtnText, { color: active ? '#fff' : theme.textMuted }]}>
+                      {locked ? '🔒' : label}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-          ) : (
-            <View style={[styles.heatGrid, { marginRight: -heatCfg.gap }]}>
-              {heatDays.map(d => (
-                <HeatmapCell
-                  key={d.date}
-                  day={d}
-                  size={cs}
-                  gap={heatCfg.gap}
-                  theme={theme}
-                  onPress={handleDayPress}
-                />
-              ))}
+          </View>
+          <Text style={[styles.cardHint, { color: theme.textMuted }]}>
+            AI-generated summary of your habit patterns
+          </Text>
+
+          {reflectionLocked ? (
+            <View style={[styles.lockedMsg, { borderColor: theme.border }]}>
+              <Text style={styles.lockedIcon}>🔒</Text>
+              <Text style={[styles.lockedTitle, { color: theme.text }]}>
+                {reflectionPeriod === 'weekly'
+                  ? `Unlocks in ${daysUntilWeekly} day${daysUntilWeekly !== 1 ? 's' : ''}`
+                  : `Unlocks in ${daysUntilMonthly} day${daysUntilMonthly !== 1 ? 's' : ''}`}
+              </Text>
+              <Text style={[styles.cardHint, { color: theme.textMuted, textAlign: 'center', marginTop: 2 }]}>
+                {reflectionPeriod === 'weekly'
+                  ? 'Track your habits for a full week to unlock your weekly summary.'
+                  : 'Track your habits for a full month to unlock your monthly summary.'}
+              </Text>
             </View>
+          ) : reflectionLoading ? (
+            <View style={styles.reflectionLoading}>
+              <ActivityIndicator size="small" color={theme.primary} />
+              <Text style={[styles.cardHint, { color: theme.textMuted, marginTop: 8 }]}>
+                Generating your {reflectionPeriod} reflection...
+              </Text>
+            </View>
+          ) : reflectionMessage ? (
+            <>
+              <Text style={[styles.reflectionText, { color: theme.text }]}>{reflectionMessage}</Text>
+              {reflectionGeneratedAt && (
+                <Text style={[styles.cardHint, { color: theme.textMuted, marginTop: 8 }]}>
+                  Generated {new Date(reflectionGeneratedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </Text>
+              )}
+            </>
+          ) : (
+            <>
+              {reflectionError && (
+                <Text style={[styles.cardHint, { color: theme.danger, marginTop: 4 }]}>
+                  Generation failed — please try again.
+                </Text>
+              )}
+              <TouchableOpacity
+                style={[styles.generateBtn, { backgroundColor: theme.primary }]}
+                onPress={handleGenerateReflection}
+              >
+                <Text style={styles.generateBtnText}>
+                  Generate {reflectionPeriod === 'weekly' ? 'weekly' : 'monthly'} summary
+                </Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
       </ScrollView>
@@ -423,6 +541,14 @@ const styles = StyleSheet.create({
   habitIcon: { fontSize: 22 },
   habitName: { fontSize: 14, fontWeight: '600' },
   habitSub: { fontSize: 12, marginTop: 2 },
+  // AI reflection
+  reflectionLoading: { alignItems: 'center', paddingVertical: 20 },
+  reflectionText: { fontSize: 14, lineHeight: 22, marginTop: 12 },
+  generateBtn: { borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
+  generateBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  lockedMsg: { alignItems: 'center', paddingVertical: 20, paddingHorizontal: 12, marginTop: 8, borderRadius: 12, borderWidth: 1, borderStyle: 'dashed' },
+  lockedIcon: { fontSize: 28, marginBottom: 6 },
+  lockedTitle: { fontSize: 15, fontWeight: '700' },
   // Bar tooltip
   tooltipOverlay: {
     ...StyleSheet.absoluteFillObject,

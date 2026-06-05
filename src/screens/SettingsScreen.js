@@ -1,13 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
   Switch, TouchableOpacity, Alert, Platform, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import TimePicker from '../components/TimePicker';
 import { applyAllReminders, cancelNotification, scheduleHabitReminder } from '../utils/notifications';
 import { lightImpact, mediumImpact } from '../utils/haptics';
+import {
+  playChime,
+  playSoundSample1, playSoundSample2, playSoundSample3,
+  playSoundSample4, playSoundSample5, playSoundSample6,
+} from '../utils/sounds';
+
+// Accounts that always have dev tool access
+const DEV_EMAILS = ['beastlyiceking@gmail.com'];
+// Secret code that unlocks dev tools for the session (tap version label 7× then enter)
+const DEV_CODE = 'devmode';
 
 function formatTime(t) {
   if (!t) return '—';
@@ -43,9 +54,51 @@ function Section({ title, children, theme }) {
 
 export default function SettingsScreen() {
   const { settings, updateSettings, theme, resetAll, dateOffset, setDateOffset, habits, updateHabit } = useApp();
-  const [timeModal, setTimeModal] = useState(null); // index of reminder being edited, or null
-  const [editingLabel, setEditingLabel] = useState(null); // index of reminder label being edited
+  const { user, signOut, displayName } = useAuth();
+
+  const handleSignOut = () => {
+    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign Out', style: 'destructive', onPress: () => signOut() },
+    ]);
+  };
+  const [timeModal, setTimeModal] = useState(null);
+  const [editingLabel, setEditingLabel] = useState(null);
   const [labelDraft, setLabelDraft] = useState('');
+
+  // Dev tools access
+  const isDevEmail = DEV_EMAILS.includes((user?.email ?? '').toLowerCase());
+  const [devUnlocked, setDevUnlocked] = useState(false);
+  const [devTapCount, setDevTapCount] = useState(0);
+  const [showDevInput, setShowDevInput] = useState(false);
+  const [devCodeDraft, setDevCodeDraft] = useState('');
+  const devTapTimer = useRef(null);
+  const showDevTools = isDevEmail || devUnlocked;
+
+  const handleVersionTap = () => {
+    if (showDevTools) return;
+    const next = devTapCount + 1;
+    setDevTapCount(next);
+    clearTimeout(devTapTimer.current);
+    devTapTimer.current = setTimeout(() => setDevTapCount(0), 2000);
+    if (next >= 7) {
+      setDevTapCount(0);
+      setShowDevInput(true);
+    }
+  };
+
+  const handleDevCodeSubmit = () => {
+    if (devCodeDraft === DEV_CODE) {
+      setDevUnlocked(true);
+      setShowDevInput(false);
+      setDevCodeDraft('');
+      lightImpact();
+      Alert.alert('Developer Mode', 'Dev tools unlocked for this session.');
+    } else {
+      Alert.alert('Invalid Code', 'That code is incorrect.');
+      setDevCodeDraft('');
+    }
+  };
 
   const reminders = settings.reminders || [];
 
@@ -88,10 +141,15 @@ export default function SettingsScreen() {
       return;
     }
     lightImpact();
+    const now = new Date();
+    const h24 = now.getHours();
+    const minute = now.getMinutes();
+    const ampm = h24 >= 12 ? 'PM' : 'AM';
+    const hour12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
     const next = [...reminders, {
       id: Date.now().toString(),
       label: `Reminder ${reminders.length + 1}`,
-      time: { hour12: 9, minute: 0, ampm: 'AM' },
+      time: { hour12, minute, ampm },
       enabled: true,
     }];
     updateReminders(next);
@@ -302,35 +360,84 @@ export default function SettingsScreen() {
               />
             }
           />
-        </Section>
-
-        {/* Dev Tools */}
-        <Section title="DEV TOOLS" theme={theme}>
-          <View style={[styles.row, { borderBottomColor: theme.border }]}>
-            <View style={styles.rowLeft}>
-              <Text style={[styles.rowLabel, { color: theme.text }]}>Simulated Date</Text>
-              <Text style={[styles.rowSub, { color: theme.textMuted }]}>{formattedDevDate}</Text>
-              {dateOffset !== 0 && (
-                <Text style={[styles.rowSub, { color: theme.warning }]}>
-                  Offset: {dateOffset > 0 ? '+' : ''}{dateOffset} day{Math.abs(dateOffset) !== 1 ? 's' : ''}
-                </Text>
-              )}
-            </View>
-            <View style={styles.devDayControls}>
-              <TouchableOpacity style={[styles.devBtn, { borderColor: theme.border }]} onPress={() => adjustDay(-1)}>
-                <Text style={[styles.devBtnText, { color: theme.text }]}>−</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.devBtn, { borderColor: theme.border }]}
-                onPress={() => setDateOffset(0)}
-              >
-                <Text style={[styles.devBtnText, { color: theme.textMuted, fontSize: 10 }]}>NOW</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.devBtn, { borderColor: theme.border }]} onPress={() => adjustDay(1)}>
-                <Text style={[styles.devBtnText, { color: theme.text }]}>+</Text>
-              </TouchableOpacity>
+          <View style={[styles.soundTestBlock, { borderTopColor: theme.border }]}>
+            <Text style={[styles.soundTestLabel, { color: theme.text }]}>Test Sounds</Text>
+            <Text style={[styles.soundTestSub, { color: theme.textMuted }]}>
+              Tap each to preview — let us know which you prefer
+            </Text>
+            <View style={styles.soundTestGrid}>
+              {[
+                { label: 'Clean Ding', fn: playSoundSample1 },
+                { label: 'Two-Tap', fn: playSoundSample2 },
+                { label: 'Soft Rise', fn: playSoundSample3 },
+                { label: 'Sparkle', fn: playSoundSample4 },
+                { label: 'Pop', fn: playSoundSample5 },
+                { label: 'Coin', fn: playSoundSample6 },
+              ].map(({ label, fn }) => (
+                <TouchableOpacity
+                  key={label}
+                  style={[styles.soundTestBtn, { borderColor: theme.border, backgroundColor: theme.bg }]}
+                  onPress={() => { lightImpact(); fn(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="volume-medium-outline" size={14} color={theme.primary} />
+                  <Text style={[styles.soundTestBtnText, { color: theme.text }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
+        </Section>
+
+        {/* Dev Tools — only visible to authorised emails or unlocked sessions */}
+        {showDevTools && (
+          <Section title="DEV TOOLS" theme={theme}>
+            <View style={[styles.row, { borderBottomColor: theme.border }]}>
+              <View style={styles.rowLeft}>
+                <Text style={[styles.rowLabel, { color: theme.text }]}>Simulated Date</Text>
+                <Text style={[styles.rowSub, { color: theme.textMuted }]}>{formattedDevDate}</Text>
+                {dateOffset !== 0 && (
+                  <Text style={[styles.rowSub, { color: theme.warning }]}>
+                    Offset: {dateOffset > 0 ? '+' : ''}{dateOffset} day{Math.abs(dateOffset) !== 1 ? 's' : ''}
+                  </Text>
+                )}
+              </View>
+              <View style={styles.devDayControls}>
+                <TouchableOpacity style={[styles.devBtn, { borderColor: theme.border }]} onPress={() => adjustDay(-1)}>
+                  <Text style={[styles.devBtnText, { color: theme.text }]}>−</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.devBtn, { borderColor: theme.border }]}
+                  onPress={() => setDateOffset(0)}
+                >
+                  <Text style={[styles.devBtnText, { color: theme.textMuted, fontSize: 10 }]}>NOW</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.devBtn, { borderColor: theme.border }]} onPress={() => adjustDay(1)}>
+                  <Text style={[styles.devBtnText, { color: theme.text }]}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Section>
+        )}
+
+        {/* Account */}
+        <Section title="ACCOUNT" theme={theme}>
+          {!!displayName && (
+            <Row
+              label="Display Name"
+              sublabel={displayName}
+              theme={theme}
+              right={null}
+            />
+          )}
+          <Row
+            label="Signed in as"
+            sublabel={user?.email ?? ''}
+            theme={theme}
+            right={null}
+          />
+          <TouchableOpacity style={styles.dangerRow} onPress={handleSignOut}>
+            <Text style={styles.dangerText}>Sign Out</Text>
+          </TouchableOpacity>
         </Section>
 
         {/* Data */}
@@ -343,8 +450,50 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Section>
 
-        <Text style={[styles.version, { color: theme.textMuted }]}>Habit Tracker v1.0</Text>
+        <TouchableOpacity onPress={handleVersionTap} activeOpacity={0.7} style={styles.versionBtn}>
+          <Text style={[styles.version, { color: theme.textMuted }]}>Habit Tracker v1.0</Text>
+          {devTapCount > 2 && !showDevTools && (
+            <Text style={[styles.devHint, { color: theme.textMuted }]}>
+              {7 - devTapCount} more tap{7 - devTapCount !== 1 ? 's' : ''} to unlock dev tools
+            </Text>
+          )}
+        </TouchableOpacity>
       </ScrollView>
+
+      {/* Dev code entry modal */}
+      {showDevInput && (
+        <View style={styles.devModal}>
+          <View style={[styles.devModalCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[styles.devModalTitle, { color: theme.text }]}>Developer Access</Text>
+            <Text style={[styles.devModalSub, { color: theme.textMuted }]}>Enter the developer code</Text>
+            <TextInput
+              style={[styles.devModalInput, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+              value={devCodeDraft}
+              onChangeText={setDevCodeDraft}
+              placeholder="Enter code"
+              placeholderTextColor={theme.textMuted}
+              secureTextEntry
+              autoFocus
+              onSubmitEditing={handleDevCodeSubmit}
+              returnKeyType="done"
+            />
+            <View style={styles.devModalBtns}>
+              <TouchableOpacity
+                style={[styles.devModalBtn, { borderColor: theme.border }]}
+                onPress={() => { setShowDevInput(false); setDevCodeDraft(''); }}
+              >
+                <Text style={[styles.devModalBtnText, { color: theme.textMuted }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.devModalBtn, { backgroundColor: theme.primary, borderColor: theme.primary }]}
+                onPress={handleDevCodeSubmit}
+              >
+                <Text style={[styles.devModalBtnText, { color: '#fff' }]}>Unlock</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
 
       {timeModal !== null && reminders[timeModal] && (
         <TimePicker
@@ -404,6 +553,15 @@ const styles = StyleSheet.create({
     gap: 6, margin: 12, padding: 10, borderRadius: 10, borderWidth: 1.5, borderStyle: 'dashed',
   },
   addReminderText: { fontSize: 14, fontWeight: '600' },
+  soundTestBlock: { borderTopWidth: 1, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14 },
+  soundTestLabel: { fontSize: 15, fontWeight: '500', marginBottom: 2 },
+  soundTestSub: { fontSize: 12, marginBottom: 10 },
+  soundTestGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  soundTestBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7,
+  },
+  soundTestBtnText: { fontSize: 13, fontWeight: '500' },
   devDayControls: { flexDirection: 'row', gap: 6 },
   devBtn: {
     width: 36, height: 36, borderRadius: 8, borderWidth: 1.5,
@@ -414,4 +572,38 @@ const styles = StyleSheet.create({
   dangerText: { color: '#EF4444', fontSize: 15, fontWeight: '600' },
   dangerSub: { fontSize: 12, marginTop: 2 },
   version: { textAlign: 'center', fontSize: 12, marginTop: 8 },
+  versionBtn: { alignItems: 'center', marginTop: 8 },
+  devHint: { fontSize: 11, marginTop: 4 },
+  devModal: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 999,
+  },
+  devModalCard: {
+    width: '80%',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 24,
+  },
+  devModalTitle: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
+  devModalSub: { fontSize: 13, marginBottom: 16 },
+  devModalInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    marginBottom: 16,
+  },
+  devModalBtns: { flexDirection: 'row', gap: 10 },
+  devModalBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  devModalBtnText: { fontSize: 14, fontWeight: '600' },
 });

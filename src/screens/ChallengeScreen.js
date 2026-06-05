@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity,
-  Modal, TextInput, KeyboardAvoidingView, Platform, Alert,
-  PanResponder, Keyboard, TouchableWithoutFeedback, Animated, Dimensions,
+  Modal, TextInput, Alert, Platform,
+  PanResponder, Keyboard, Animated, Dimensions,
 } from 'react-native';
 import { useApp, getChallengeTier, TIER_STYLES } from '../context/AppContext';
+import Slider from '../components/Slider';
+import BottomSheet from '../components/BottomSheet';
+import EmptyCard from '../components/EmptyCard';
+import { SheetDragHandle, SheetHeader } from '../components/SheetHeader';
 import CelebrationOverlay from '../components/CelebrationOverlay';
 import TrophyCelebration from '../components/TrophyCelebration';
 import { lightImpact, mediumImpact } from '../utils/haptics';
@@ -72,52 +76,6 @@ function makeDragPanResponder(translateY, onClose) {
   });
 }
 
-// ── Duration slider ───────────────────────────────────────────────────────────
-
-function DurationSlider({ value, max, onValueChange, theme }) {
-  const layoutRef = useRef({ x: 0, width: 1 });
-  const maxRef = useRef(max);
-  const onChangeRef = useRef(onValueChange);
-  const ref = useRef(null);
-
-  useEffect(() => { maxRef.current = max; }, [max]);
-  useEffect(() => { onChangeRef.current = onValueChange; }, [onValueChange]);
-
-  const panResponder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: (_, gs) => {
-      const { x, width } = layoutRef.current;
-      const ratio = Math.max(0, Math.min(1, (gs.x0 - x) / width));
-      onChangeRef.current(Math.max(1, Math.round(ratio * (maxRef.current - 1) + 1)));
-    },
-    onPanResponderMove: (_, gs) => {
-      const { x, width } = layoutRef.current;
-      const ratio = Math.max(0, Math.min(1, (gs.moveX - x) / width));
-      onChangeRef.current(Math.max(1, Math.round(ratio * (maxRef.current - 1) + 1)));
-    },
-  })).current;
-
-  const fillRatio = max <= 1 ? 0 : (value - 1) / (max - 1);
-
-  return (
-    <View
-      ref={ref}
-      onLayout={() => ref.current?.measure((fx, fy, w, h, px) => {
-        layoutRef.current = { x: px, width: Math.max(w, 1) };
-      })}
-      {...panResponder.panHandlers}
-      style={styles.sliderTrackArea}
-    >
-      <View style={[styles.sliderTrack, { backgroundColor: theme.border }]}>
-        <View style={[styles.sliderFill, { width: `${fillRatio * 100}%`, backgroundColor: theme.primary }]} />
-      </View>
-      <View style={[styles.sliderThumb, { left: `${Math.max(0, Math.min(100, fillRatio * 100))}%`, backgroundColor: theme.primary }]} />
-    </View>
-  );
-}
-
 // ── Day badge ─────────────────────────────────────────────────────────────────
 
 function DayBadge({ dayNum, completed, isCurrent, isMissed, theme }) {
@@ -156,22 +114,8 @@ function HabitLinkModal({ visible, challengeId, challenges, habits, onClose, onL
   if (!challengeId) return null;
 
   return (
-    <Modal visible={sheet.internalVisible} animationType="none" transparent onRequestClose={doClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.overlayBg} />
-        </TouchableWithoutFeedback>
-        <Animated.View style={[styles.sheet, { backgroundColor: theme.surface, transform: [{ translateY: sheet.translateY }] }]}>
-          <View {...pan.panHandlers} style={styles.dragHandleArea}>
-            <View style={[styles.handleBar, { backgroundColor: theme.border }]} />
-          </View>
-
-          <View style={styles.sheetHeader}>
-            <Text style={[styles.sheetTitle, { color: theme.text }]}>Link Habits</Text>
-            <TouchableOpacity onPress={doClose} style={styles.sheetCloseBtn}>
-              <Text style={[styles.sheetCloseTxt, { color: theme.textMuted }]}>✕</Text>
-            </TouchableOpacity>
-          </View>
+    <BottomSheet visible={sheet.internalVisible} onClose={doClose} translateY={sheet.translateY} backgroundColor={theme.surface}>
+      <SheetHeader title="Link Habits" onClose={doClose} panHandlers={pan.panHandlers} theme={theme} />
 
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             <Text style={[styles.linkHint, { color: theme.textMuted }]}>
@@ -226,9 +170,7 @@ function HabitLinkModal({ visible, challengeId, challenges, habits, onClose, onL
               <Text style={[styles.addHabitInModalText, { color: theme.primary }]}>+ Add New Habit & Link</Text>
             </TouchableOpacity>
           </ScrollView>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheet>
   );
 }
 
@@ -274,25 +216,13 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
   };
 
   return (
-    <Modal visible={sheet.internalVisible} animationType="none" transparent onRequestClose={doClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.overlayBg} />
-        </TouchableWithoutFeedback>
-
-        <Animated.View style={[styles.sheet, { backgroundColor: theme.surface, transform: [{ translateY: sheet.translateY }] }]}>
-          <View {...pan.panHandlers} style={styles.dragHandleArea}>
-            <View style={[styles.handleBar, { backgroundColor: theme.border }]} />
-          </View>
-
-          <View style={styles.sheetHeader}>
-            <Text style={[styles.sheetTitle, { color: theme.text }]}>
-              {initial ? 'Edit Challenge' : 'New Challenge'}
-            </Text>
-            <TouchableOpacity onPress={doClose} style={styles.sheetCloseBtn}>
-              <Text style={[styles.sheetCloseTxt, { color: theme.textMuted }]}>✕</Text>
-            </TouchableOpacity>
-          </View>
+    <BottomSheet visible={sheet.internalVisible} onClose={doClose} translateY={sheet.translateY} backgroundColor={theme.surface}>
+      <SheetHeader
+        title={initial ? 'Edit Challenge' : 'New Challenge'}
+        onClose={doClose}
+        panHandlers={pan.panHandlers}
+        theme={theme}
+      />
 
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -360,7 +290,7 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
               ))}
             </View>
 
-            <DurationSlider value={days} max={rangeMax} onValueChange={setDays} theme={theme} />
+            <Slider value={days} min={1} max={rangeMax} onValueChange={setDays} theme={theme} />
 
             <View style={styles.sliderLabels}>
               <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>1</Text>
@@ -376,9 +306,7 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
               <Text style={styles.saveBtnText}>{initial ? 'Save Changes' : 'Create Challenge'}</Text>
             </TouchableOpacity>
           </ScrollView>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheet>
   );
 }
 
@@ -408,9 +336,7 @@ function PastChallengeDetailModal({ challenge, onClose, theme }) {
       <View style={styles.overlay}>
         <View style={styles.overlayBg} />
         <Animated.View style={[styles.sheet, { backgroundColor: cardBg, transform: [{ translateY: sheet.translateY }] }]}>
-          <View {...pan.panHandlers} style={styles.dragHandleArea}>
-            <View style={[styles.handleBar, { backgroundColor: cardBorder }]} />
-          </View>
+          <SheetDragHandle panHandlers={pan.panHandlers} theme={theme} color={cardBorder} />
 
           <View style={styles.sheetHeader}>
             <Text style={[styles.sheetTitle, { color: textColor }]}>
@@ -573,7 +499,8 @@ function ChallengeCard({ challenge, habits, today, onEdit, onDelete, onLinkHabit
 
 export default function ChallengeScreen() {
   const {
-    habits, challenges, pastChallenges, theme, settings,
+    habits, challenges, pastChallenges, effectiveChallenges, effectivePastChallenges,
+    theme, settings,
     isChallengeHabitsDone,
     editChallenge, createChallenge, deleteChallenge,
     archiveExpiredChallenge,
@@ -634,7 +561,7 @@ export default function ChallengeScreen() {
     setRequestedTab(3); // Navigate to Habits tab
   };
 
-  const canAddMore = challenges.length < 3;
+  const canAddMore = effectiveChallenges.length < 3;
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: theme.bg }]}>
@@ -648,19 +575,20 @@ export default function ChallengeScreen() {
           )}
         </View>
 
-        {challenges.length === 0 ? (
-          <View style={[styles.emptyCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-            <Text style={styles.emptyEmoji}>🏆</Text>
-            <Text style={[styles.emptyTitle, { color: theme.text }]}>No challenges yet</Text>
-            <Text style={[styles.emptyBody, { color: theme.textMuted }]}>
-              Tap "+ New" to create your first challenge.
-            </Text>
+        {effectiveChallenges.length === 0 ? (
+          <EmptyCard
+            emoji="🏆"
+            title="No challenges yet"
+            body='Tap "+ New" to create your first challenge.'
+            theme={theme}
+            style={{ backgroundColor: theme.surface, borderWidth: 1, marginTop: 0 }}
+          >
             <TouchableOpacity style={[styles.emptyBtn, { backgroundColor: theme.primary }]} onPress={openNew}>
               <Text style={styles.emptyBtnText}>Create a Challenge</Text>
             </TouchableOpacity>
-          </View>
+          </EmptyCard>
         ) : (
-          challenges.map(challenge => (
+          effectiveChallenges.map(challenge => (
             <ChallengeCard
               key={challenge.id}
               challenge={challenge}
@@ -674,7 +602,7 @@ export default function ChallengeScreen() {
           ))
         )}
 
-        {challenges.length > 0 && challenges.length < 3 && (
+        {effectiveChallenges.length > 0 && effectiveChallenges.length < 3 && (
           <View style={[styles.card, { backgroundColor: theme.primaryLight, borderColor: theme.primary }]}>
             <Text style={[styles.tipTitle, { color: theme.primary }]}>💡 Tip</Text>
             <Text style={[styles.tipBody, { color: theme.text }]}>
@@ -686,14 +614,14 @@ export default function ChallengeScreen() {
         {/* Past Challenges — always visible */}
         <View style={{ marginTop: 8 }}>
           <Text style={[styles.sectionLabel, { color: theme.textMuted }]}>PAST CHALLENGES</Text>
-          {pastChallenges.length === 0 ? (
+          {effectivePastChallenges.length === 0 ? (
             <View style={[styles.pastEmptyCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
               <Text style={[styles.pastEmptyText, { color: theme.textMuted }]}>
                 Completed or deleted challenges will appear here.
               </Text>
             </View>
           ) : (
-            pastChallenges.map((ch, i) => {
+            effectivePastChallenges.map((ch, i) => {
               const tier = ch.tier || getChallengeTier(ch.completedDays?.length ?? 0, ch.days);
               const ts = TIER_STYLES[tier];
               const cardBg = ts.bg || theme.surface;
@@ -743,7 +671,7 @@ export default function ChallengeScreen() {
       <HabitLinkModal
         visible={!!linkingChallengeId}
         challengeId={linkingChallengeId}
-        challenges={challenges}
+        challenges={effectiveChallenges}
         habits={habits}
         onClose={() => setLinkingChallengeId(null)}
         onLink={(habitId) => linkHabitToChallenge(linkingChallengeId, habitId)}
@@ -842,8 +770,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24, paddingBottom: Platform.OS === 'ios' ? 40 : 24,
     maxHeight: '92%',
   },
-  dragHandleArea: { alignItems: 'center', paddingVertical: 12 },
-  handleBar: { width: 40, height: 4, borderRadius: 2 },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   sheetTitle: { fontSize: 20, fontWeight: 'bold' },
   sheetCloseBtn: { padding: 4 },
@@ -854,13 +780,6 @@ const styles = StyleSheet.create({
   rangeRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
   rangeBtn: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, alignItems: 'center' },
   rangeBtnText: { fontSize: 13, fontWeight: '700' },
-  sliderTrackArea: { height: 44, justifyContent: 'center', marginBottom: 4, marginHorizontal: 11 },
-  sliderTrack: { height: 6, borderRadius: 3 },
-  sliderFill: { height: 6, borderRadius: 3 },
-  sliderThumb: {
-    position: 'absolute', width: 22, height: 22, borderRadius: 11, marginLeft: -11, top: 11,
-    elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 2,
-  },
   sliderLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16, marginHorizontal: 4 },
   sliderLabelText: { fontSize: 11 },
   saveBtn: { padding: 16, borderRadius: 14, alignItems: 'center' },

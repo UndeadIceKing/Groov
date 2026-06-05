@@ -1,16 +1,18 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
-  TouchableOpacity,
+  TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { useApp } from '../context/AppContext';
 import HabitCard from '../components/HabitCard';
+import EmptyCard from '../components/EmptyCard';
 import ProgressRing from '../components/ProgressRing';
 import CelebrationOverlay from '../components/CelebrationOverlay';
 import CompletionCelebration from '../components/CompletionCelebration';
 import TrophyCelebration from '../components/TrophyCelebration';
 import { playChime, playSuccessChime, playChallengeChime } from '../utils/sounds';
 import { mediumImpact, heavyImpact, lightImpact, successNotification } from '../utils/haptics';
+import { fetchDailyNudge } from '../services/aiCoaching';
 
 function getGreeting(offset = 0) {
   const h = new Date().getHours();
@@ -38,6 +40,11 @@ async function hapticFillSequence(hapticsEnabled) {
   setTimeout(() => successNotification(), 780);
 }
 
+function getRelevantHabits(challenge, habits) {
+  const ids = challenge.linkedHabitIds || [];
+  return ids.length > 0 ? habits.filter(h => ids.includes(h.id)) : habits;
+}
+
 // Returns true if the challenge period has elapsed (today is after all challenge days)
 function isChallengeExpiredFor(ch, today) {
   if (!ch.startDate) return false;
@@ -51,7 +58,7 @@ export default function TodayScreen() {
   const {
     habits, challenges, completions, getCompletedCount, isAllDone, incrementHabit, decrementHabit,
     isChallengeHabitsDone, settings, theme, markChallengeDay, unmarkChallengeDay,
-    getHabitCount, dateOffset, todayStr,
+    getHabitCount, dateOffset, todayStr, accountCreatedAt, displayName, isDevEmail,
     completeChallengeImmediately, selectAllHabitsToday, resetAllHabitsToday,
   } = useApp();
 
@@ -60,11 +67,38 @@ export default function TodayScreen() {
   const [trophyCelebrating, setTrophyCelebrating] = useState(false);
   const allDoneCelebrated = useRef(false);
 
+  const [nudgeMessage, setNudgeMessage] = useState(null);
+  const [nudgeLoading, setNudgeLoading] = useState(false);
+  const nudgeFetched = useRef(false);
+
   // Reset the "already celebrated today" flag whenever the date rolls over
   const today = todayStr();
   useEffect(() => {
     allDoneCelebrated.current = false;
   }, [today]);
+
+  // Number of complete days that have passed since account creation (0 on day 1).
+  // Only whole days before today count — today's data is still in flux.
+  const accountAgeDays = accountCreatedAt
+    ? Math.round((Date.parse(today) - Date.parse(accountCreatedAt)) / 86400000)
+    : 0;
+  const canShowNudge = accountAgeDays >= 1;
+
+  // Dev users pass todayStr() (which reflects the date offset) so the AI coach
+  // responds to the simulated date. All other users always use the real date.
+  const excludeDate = isDevEmail ? today : new Date().toISOString().split('T')[0];
+
+  // Fetch daily nudge once when habits are available, but only from day 2 onwards
+  // so the coach always works from at least one full day of completed history.
+  useEffect(() => {
+    if (habits.length === 0 || nudgeFetched.current || !canShowNudge) return;
+    nudgeFetched.current = true;
+    setNudgeLoading(true);
+    fetchDailyNudge(accountCreatedAt, displayName, excludeDate)
+      .then((data) => { if (data?.message) setNudgeMessage(data.message); })
+      .catch(() => {})
+      .finally(() => setNudgeLoading(false));
+  }, [habits.length, canShowNudge]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const completed = getCompletedCount();
   const total = habits.length;
@@ -73,7 +107,7 @@ export default function TodayScreen() {
 
   // Shared logic for auto-claiming/completing challenges after habits are done.
   // Returns { anyClaimed, anyComplete } so callers can trigger sounds/trophies.
-  const autoClaimChallenges = useCallback((justCompletedHabitId) => {
+  const autoClaimChallenges = useCallback((justCompletedHabitId, assumeAllDone = false) => {
     const today = todayStr();
     let anyClaimed = false;
     let anyComplete = false;
@@ -82,11 +116,10 @@ export default function TodayScreen() {
       if (ch.completedDays.includes(today)) return;
       if (isChallengeExpiredFor(ch, today)) return;
 
-      const ids = ch.linkedHabitIds || [];
-      const relevant = ids.length > 0 ? habits.filter(h => ids.includes(h.id)) : habits;
+      const relevant = getRelevantHabits(ch, habits);
       if (relevant.length === 0) return;
 
-      const allRelevantDone = relevant.every(h => {
+      const allRelevantDone = assumeAllDone || relevant.every(h => {
         if (justCompletedHabitId && h.id === justCompletedHabitId) return true;
         return getHabitCount(h.id) >= h.volumeGoal;
       });
@@ -136,15 +169,17 @@ export default function TodayScreen() {
   const handleDecrement = useCallback(async (habit) => {
     const today = todayStr();
     const countBefore = getHabitCount(habit.id);
+    const habitWasDone = countBefore >= habit.volumeGoal;
+    const habitStillDone = (countBefore - 1) >= habit.volumeGoal;
+
     decrementHabit(habit.id);
     allDoneCelebrated.current = false;
 
-    const willBeDone = (countBefore - 1) >= habit.volumeGoal;
-    if (!willBeDone) {
+    // Only unmark challenge days when this habit transitions from done → not done
+    if (habitWasDone && !habitStillDone) {
       challenges.forEach(ch => {
         if (!ch.completedDays.includes(today)) return;
-        const ids = ch.linkedHabitIds || [];
-        const relevant = ids.length > 0 ? habits.filter(h => ids.includes(h.id)) : habits;
+        const relevant = getRelevantHabits(ch, habits);
         if (relevant.some(h => h.id === habit.id)) {
           unmarkChallengeDay(ch.id);
         }
@@ -163,28 +198,9 @@ export default function TodayScreen() {
         if (ch.completedDays.includes(today)) unmarkChallengeDay(ch.id);
       });
     } else {
-      // Select all — every habit will be at goal, so all challenges with linked habits qualify
       selectAllHabitsToday();
-
-      let anyClaimed = false;
-      let anyComplete = false;
-      challenges.forEach(ch => {
-        if (ch.completedDays.includes(today)) return;
-        if (isChallengeExpiredFor(ch, today)) return;
-        const ids = ch.linkedHabitIds || [];
-        const relevant = ids.length > 0 ? habits.filter(h => ids.includes(h.id)) : habits;
-        if (relevant.length === 0) return;
-
-        const newDaysList = [...ch.completedDays, today];
-        if (newDaysList.length >= ch.days) {
-          completeChallengeImmediately(ch.id);
-          anyComplete = true;
-        } else {
-          markChallengeDay(ch.id);
-        }
-        anyClaimed = true;
-      });
-
+      // assumeAllDone=true because selectAllHabitsToday hasn't flushed to state yet
+      const { anyClaimed, anyComplete } = autoClaimChallenges(null, true);
       if (anyClaimed && settings.soundEnabled) playChallengeChime();
 
       if (!allDoneCelebrated.current) {
@@ -198,10 +214,9 @@ export default function TodayScreen() {
       }
     }
   }, [
-    allDone, habits, challenges, todayStr,
-    selectAllHabitsToday, resetAllHabitsToday,
-    markChallengeDay, unmarkChallengeDay, completeChallengeImmediately,
-    settings,
+    allDone, challenges, todayStr,
+    autoClaimChallenges, selectAllHabitsToday, resetAllHabitsToday,
+    unmarkChallengeDay, settings,
   ]);
 
   return (
@@ -213,7 +228,9 @@ export default function TodayScreen() {
       >
         {/* Header */}
         <View style={[styles.header, { backgroundColor: theme.primary }]}>
-          <Text style={styles.greeting}>{getGreeting(dateOffset)} 👋</Text>
+          <Text style={styles.greeting}>
+            {getGreeting(dateOffset)}{displayName ? `, ${displayName}` : ''} 👋
+          </Text>
           <Text style={styles.date}>{getDateString(dateOffset)}</Text>
           {dateOffset !== 0 && (
             <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11, marginTop: 2 }}>
@@ -247,14 +264,23 @@ export default function TodayScreen() {
 
         {/* Habits */}
         <View style={styles.content}>
-          {habits.length === 0 ? (
-            <View style={[styles.empty, { borderColor: theme.border }]}>
-              <Text style={styles.emptyEmoji}>🌱</Text>
-              <Text style={[styles.emptyTitle, { color: theme.text }]}>No habits yet</Text>
-              <Text style={[styles.emptyBody, { color: theme.textMuted }]}>
-                Go to Habits tab to add your first habit.
-              </Text>
+          {/* AI Coach Nudge — hidden on day 1; coach needs prior-day data */}
+          {canShowNudge && (nudgeLoading || nudgeMessage) && (
+            <View style={[styles.nudgeCard, { backgroundColor: theme.primaryLight, borderColor: theme.primary }]}>
+              <Text style={styles.nudgeEmoji}>✨</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.nudgeLabel, { color: theme.primary }]}>AI Coach</Text>
+                {nudgeLoading ? (
+                  <ActivityIndicator size="small" color={theme.primary} style={{ marginTop: 4 }} />
+                ) : (
+                  <Text style={[styles.nudgeText, { color: theme.text }]}>{nudgeMessage}</Text>
+                )}
+              </View>
             </View>
+          )}
+
+          {habits.length === 0 ? (
+            <EmptyCard emoji="🌱" title="No habits yet" body="Go to Habits tab to add your first habit." theme={theme} />
           ) : (
             <>
               <View style={styles.sectionHeader}>
@@ -329,6 +355,13 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4,
   },
   selectAllBtnText: { fontSize: 12, fontWeight: '700' },
+  nudgeCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 16,
+  },
+  nudgeEmoji: { fontSize: 18, marginTop: 1 },
+  nudgeLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 },
+  nudgeText: { fontSize: 13, lineHeight: 20 },
   empty: {
     borderWidth: 2, borderStyle: 'dashed', borderRadius: 16,
     padding: 36, alignItems: 'center', marginTop: 24,

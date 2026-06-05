@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 // ─── Web Audio API (browser) ──────────────────────────────────────────────────
 
@@ -65,29 +65,63 @@ function buildWAV(frequency, duration, gain = 0.45) {
   return bytes;
 }
 
+// Pure-JS base64 — avoids btoa + String.fromCharCode.apply issues on React Native
 function uint8ToBase64(bytes) {
-  const CHUNK = 8192;
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let result = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    result += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  const len = bytes.length;
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    result += chars[b0 >> 2];
+    result += chars[((b0 & 3) << 4) | (b1 >> 4)];
+    result += i + 1 < len ? chars[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+    result += i + 2 < len ? chars[b2 & 63] : '=';
   }
-  return btoa(result);
+  return result;
 }
 
-let audioModeReady = false;
-// Map key → { uri, written: bool }
-const soundCache = {};
+// ─── Audio mode — singleton promise so concurrent tones don't race each other ──
+// (playChime fires 3 tones nearly simultaneously; 3 parallel setAudioModeAsync
+// calls racing each other would corrupt the audio session on some platforms)
 
-async function ensureAudioMode() {
-  if (audioModeReady) return;
-  await Audio.setAudioModeAsync({
+let audioModePromise = null;
+
+function ensureAudioMode() {
+  if (audioModePromise) return audioModePromise;
+  audioModePromise = Audio.setAudioModeAsync({
     playsInSilentModeIOS: true,
     allowsRecordingIOS: false,
     staysActiveInBackground: false,
     shouldDuckAndroid: true,
     playThroughEarpieceAndroid: false,
+  }).catch(e => {
+    console.warn('[Sound] setAudioModeAsync failed:', e?.message ?? e);
+    audioModePromise = null; // reset so next call retries
   });
-  audioModeReady = true;
+  return audioModePromise;
+}
+
+// ─── WAV file cache (documentDirectory = stable, never cleared by OS) ─────────
+
+const memCache = {}; // key → file URI (in-memory, reset on app restart)
+
+async function getOrCreateWav(key, frequency, duration, gain) {
+  if (memCache[key]) return memCache[key];
+
+  const uri = `${FileSystem.documentDirectory}snd_${key}.wav`;
+
+  // Reuse file written in a previous session
+  const info = await FileSystem.getInfoAsync(uri);
+  if (!info.exists) {
+    const wav = buildWAV(frequency, duration, gain);
+    const b64 = uint8ToBase64(wav);
+    await FileSystem.writeAsStringAsync(uri, b64, { encoding: FileSystem.EncodingType.Base64 });
+  }
+
+  memCache[key] = uri;
+  return uri;
 }
 
 async function playToneNative(frequency, duration, gain = 0.3) {
@@ -95,34 +129,17 @@ async function playToneNative(frequency, duration, gain = 0.3) {
     await ensureAudioMode();
 
     const key = `${frequency}_${Math.round(duration * 1000)}`;
-    const uri = `${FileSystem.cacheDirectory}tone_${key}.wav`;
-
-    // Check cache — re-write if file doesn't exist on disk
-    if (!soundCache[key]) {
-      const wav = buildWAV(frequency, duration, gain);
-      const b64 = uint8ToBase64(wav);
-      await FileSystem.writeAsStringAsync(uri, b64, { encoding: FileSystem.EncodingType.Base64 });
-      soundCache[key] = uri;
-    } else {
-      // Verify file still exists (cache dir can be cleared by OS)
-      const info = await FileSystem.getInfoAsync(uri);
-      if (!info.exists) {
-        const wav = buildWAV(frequency, duration, gain);
-        const b64 = uint8ToBase64(wav);
-        await FileSystem.writeAsStringAsync(uri, b64, { encoding: FileSystem.EncodingType.Base64 });
-        soundCache[key] = uri;
-      }
-    }
+    const uri = await getOrCreateWav(key, frequency, duration, gain);
 
     const { sound } = await Audio.Sound.createAsync(
-      { uri: soundCache[key] },
+      { uri },
       { volume: 1.0, shouldPlay: true }
     );
     sound.setOnPlaybackStatusUpdate(status => {
       if (status.didJustFinish) sound.unloadAsync().catch(() => {});
     });
-  } catch {
-    // Sound is non-critical — fail silently
+  } catch (e) {
+    console.warn('[Sound] playback failed:', e?.message ?? e);
   }
 }
 
@@ -156,10 +173,44 @@ export function playChallengeChime() {
 }
 
 export function playHornFanfare() {
-  // Triumphant horn-like fanfare for challenge completion
   const notes = [523, 659, 784, 1047, 1319, 1568];
   notes.forEach((freq, i) => setTimeout(() => playTone(freq, 0.6, 0.35), i * 90));
   setTimeout(() => playTone(1568, 1.2, 0.4), 600);
   setTimeout(() => playTone(1319, 0.4, 0.3), 850);
   setTimeout(() => playTone(1047, 1.5, 0.35), 1050);
+}
+
+// ─── Sound option samples (for user to test and choose) ───────────────────────
+
+// Option 1 — "Clean Ding": single crisp bell, very short
+export function playSoundSample1() {
+  playTone(1209, 0.2, 0.32);
+}
+
+// Option 2 — "Two-Tap": two quick ascending notes (Duolingo-style confirm)
+export function playSoundSample2() {
+  playTone(523, 0.13, 0.3);
+  setTimeout(() => playTone(784, 0.22, 0.28), 80);
+}
+
+// Option 3 — "Soft Rise": three gentle ascending notes, warm and mellow
+export function playSoundSample3() {
+  [440, 554, 659].forEach((f, i) => setTimeout(() => playTone(f, 0.25, 0.24), i * 115));
+}
+
+// Option 4 — "Sparkle": four rapid ascending notes, bright and playful
+export function playSoundSample4() {
+  [659, 784, 988, 1319].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 0.28), i * 58));
+}
+
+// Option 5 — "Pop": short punchy double-tone, satisfying
+export function playSoundSample5() {
+  playTone(660, 0.12, 0.34);
+  setTimeout(() => playTone(990, 0.18, 0.24), 45);
+}
+
+// Option 6 — "Coin": two sharp metallic tones, video-game style
+export function playSoundSample6() {
+  playTone(1320, 0.08, 0.4);
+  setTimeout(() => playTone(1760, 0.25, 0.32), 58);
 }

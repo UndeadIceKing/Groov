@@ -18,14 +18,6 @@ export async function loadData(key) {
   }
 }
 
-export async function clearData(key) {
-  try {
-    await AsyncStorage.removeItem(key);
-  } catch (e) {
-    console.warn('clearData failed:', key, e);
-  }
-}
-
 export async function clearAll() {
   try {
     await AsyncStorage.clear();

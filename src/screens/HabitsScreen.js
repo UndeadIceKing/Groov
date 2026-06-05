@@ -1,12 +1,16 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity,
-  Modal, TextInput, KeyboardAvoidingView, Platform, Alert, Animated,
+  Modal, TextInput, Alert, Animated,
   PanResponder, TouchableWithoutFeedback, Keyboard, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../context/AppContext';
+import Slider from '../components/Slider';
+import BottomSheet from '../components/BottomSheet';
+import EmptyCard from '../components/EmptyCard';
+import { SheetDragHandle } from '../components/SheetHeader';
 import TimePicker from '../components/TimePicker';
 import { scheduleHabitReminder } from '../utils/notifications';
 import { lightImpact, mediumImpact } from '../utils/haptics';
@@ -61,50 +65,6 @@ const VOLUME_MAX_OPTIONS = [
   { label: '25', max: 25 },
   { label: '100', max: 100 },
 ];
-
-function VolumeSlider({ value, max, onValueChange, theme }) {
-  const layoutRef = useRef({ x: 0, width: 1 });
-  const maxRef = useRef(max);
-  const onChangeRef = useRef(onValueChange);
-  const ref = useRef(null);
-
-  useEffect(() => { maxRef.current = max; }, [max]);
-  useEffect(() => { onChangeRef.current = onValueChange; }, [onValueChange]);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: (_, gs) => {
-        const { x, width } = layoutRef.current;
-        const ratio = Math.max(0, Math.min(1, (gs.x0 - x) / width));
-        onChangeRef.current(Math.max(2, Math.round(ratio * (maxRef.current - 2) + 2)));
-      },
-      onPanResponderMove: (_, gs) => {
-        const { x, width } = layoutRef.current;
-        const ratio = Math.max(0, Math.min(1, (gs.moveX - x) / width));
-        onChangeRef.current(Math.max(2, Math.round(ratio * (maxRef.current - 2) + 2)));
-      },
-    })
-  ).current;
-
-  const fillRatio = (value - 2) / Math.max(1, max - 2);
-
-  return (
-    <View
-      ref={ref}
-      onLayout={() => ref.current?.measure((fx, fy, w, h, px) => { layoutRef.current = { x: px, width: Math.max(w, 1) }; })}
-      {...panResponder.panHandlers}
-      style={styles.sliderTrackArea}
-    >
-      <View style={[styles.sliderTrack, { backgroundColor: theme.border }]}>
-        <View style={[styles.sliderFill, { width: `${fillRatio * 100}%`, backgroundColor: theme.primary }]} />
-      </View>
-      <View style={[styles.sliderThumb, { left: `${fillRatio * 100}%`, backgroundColor: theme.primary }]} />
-    </View>
-  );
-}
 
 function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme }) {
   const translateY = useRef(new Animated.Value(700)).current;
@@ -184,21 +144,9 @@ function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme 
   const handleClose = () => animateClose(onClose);
 
   return (
-    <Modal visible={internalVisible} animationType="none" transparent onRequestClose={handleClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.overlayBg} />
-        </TouchableWithoutFeedback>
+    <BottomSheet visible={internalVisible} onClose={handleClose} translateY={translateY} backgroundColor={theme.surface} maxHeight="90%">
+          <SheetDragHandle panHandlers={panResponder.panHandlers} theme={theme} />
 
-        <Animated.View
-          style={[styles.sheet, { backgroundColor: theme.surface, transform: [{ translateY }] }]}
-        >
-          {/* Drag handle */}
-          <View {...panResponder.panHandlers} style={styles.dragHandleArea}>
-            <View style={[styles.dragHandle, { backgroundColor: theme.border }]} />
-          </View>
-
-          {/* Header with X */}
           <View style={styles.sheetHeader}>
             <Text style={[styles.sheetTitle, { color: theme.text }]}>
               {editingId ? 'Edit Habit' : 'New Habit'}
@@ -274,8 +222,9 @@ function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme 
                         </TouchableOpacity>
                       ))}
                     </View>
-                    <VolumeSlider
+                    <Slider
                       value={form.volumeGoal}
+                      min={2}
                       max={volMax}
                       onValueChange={v => setForm(f => ({ ...f, volumeGoal: v }))}
                       theme={theme}
@@ -298,9 +247,49 @@ function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme 
               <Text style={styles.saveBtnText}>{editingId ? 'Save Changes' : 'Add Habit'}</Text>
             </TouchableOpacity>
           </ScrollView>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheet>
+  );
+}
+
+function HabitRow({ habit, theme, onEdit, onDelete, onBell }) {
+  const reminderTime = formatReminder(habit.reminder);
+  const reminderOn = habit.reminder?.enabled;
+  return (
+    <View style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+      {habit.customIconUri ? (
+        <Image source={{ uri: habit.customIconUri }} style={styles.rowIconImage} />
+      ) : (
+        <Text style={styles.rowIcon}>{habit.icon}</Text>
+      )}
+      <View style={styles.rowInfo}>
+        <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>{habit.name}</Text>
+        <View style={styles.rowMeta}>
+          <View style={[styles.typePill, { backgroundColor: theme.primaryLight }]}>
+            <Text style={[styles.typePillText, { color: theme.primary }]}>
+              {habit.type === 'daily' ? 'Daily' : `${habit.volumeGoal}× / day`}
+            </Text>
+          </View>
+          {reminderTime && (
+            <View style={[styles.reminderPill, { backgroundColor: theme.primaryLight }]}>
+              <Text style={[styles.reminderPillText, { color: theme.primary }]}>🔔 {reminderTime}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+      <TouchableOpacity style={styles.bellBtn} onPress={onBell}>
+        <Ionicons
+          name={reminderOn ? 'notifications' : 'notifications-outline'}
+          size={20}
+          color={reminderOn ? theme.primary : theme.textMuted}
+        />
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.editBtn} onPress={onEdit}>
+        <Text style={[styles.editBtnText, { color: theme.textMuted }]}>Edit</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.deleteBtn} onPress={onDelete}>
+        <Text style={styles.deleteBtnText}>✕</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -422,59 +411,18 @@ export default function HabitsScreen() {
         </View>
 
         {habits.length === 0 ? (
-          <View style={[styles.empty, { borderColor: theme.border }]}>
-            <Text style={styles.emptyEmoji}>🌱</Text>
-            <Text style={[styles.emptyTitle, { color: theme.text }]}>No habits yet</Text>
-            <Text style={[styles.emptyBody, { color: theme.textMuted }]}>Tap "+ Add" to create your first habit.</Text>
-          </View>
+          <EmptyCard emoji="🌱" title="No habits yet" body='Tap "+ Add" to create your first habit.' theme={theme} />
         ) : (
-          habits.map(habit => {
-            const reminderTime = formatReminder(habit.reminder);
-            const reminderOn = habit.reminder?.enabled;
-            return (
-              <View key={habit.id} style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-                {habit.customIconUri ? (
-                  <Image source={{ uri: habit.customIconUri }} style={styles.rowIconImage} />
-                ) : (
-                  <Text style={styles.rowIcon}>{habit.icon}</Text>
-                )}
-                <View style={styles.rowInfo}>
-                  <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>{habit.name}</Text>
-                  <View style={styles.rowMeta}>
-                    <View style={[styles.typePill, { backgroundColor: theme.primaryLight }]}>
-                      <Text style={[styles.typePillText, { color: theme.primary }]}>
-                        {habit.type === 'daily' ? 'Daily' : `${habit.volumeGoal}× / day`}
-                      </Text>
-                    </View>
-                    {reminderTime && (
-                      <View style={[styles.reminderPill, { backgroundColor: theme.primaryLight }]}>
-                        <Text style={[styles.reminderPillText, { color: theme.primary }]}>🔔 {reminderTime}</Text>
-                      </View>
-                    )}
-                  </View>
-                </View>
-
-                {/* Bell icon - outline style */}
-                <TouchableOpacity
-                  style={styles.bellBtn}
-                  onPress={() => { lightImpact(); reminderOn ? handleReminderToggleOff(habit) : setReminderTarget(habit.id); }}
-                >
-                  <Ionicons
-                    name={reminderOn ? 'notifications' : 'notifications-outline'}
-                    size={20}
-                    color={reminderOn ? theme.primary : theme.textMuted}
-                  />
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(habit)}>
-                  <Text style={[styles.editBtnText, { color: theme.textMuted }]}>Edit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(habit.id, habit.name)}>
-                  <Text style={styles.deleteBtnText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            );
-          })
+          habits.map(habit => (
+            <HabitRow
+              key={habit.id}
+              habit={habit}
+              theme={theme}
+              onEdit={() => openEdit(habit)}
+              onDelete={() => handleDelete(habit.id, habit.name)}
+              onBell={() => { lightImpact(); habit.reminder?.enabled ? handleReminderToggleOff(habit) : setReminderTarget(habit.id); }}
+            />
+          ))
         )}
       </ScrollView>
 
@@ -491,17 +439,29 @@ export default function HabitsScreen() {
         theme={theme}
       />
 
-      {targetHabit && (
-        <TimePicker
-          visible={true}
-          hour12={targetHabit.reminder?.hour12 ?? DEFAULT_REMINDER.hour12}
-          minute={targetHabit.reminder?.minute ?? DEFAULT_REMINDER.minute}
-          ampm={targetHabit.reminder?.ampm ?? DEFAULT_REMINDER.ampm}
-          onClose={() => setReminderTarget(null)}
-          onSave={(t) => handleReminderSave(targetHabit.id, t)}
-          theme={theme}
-        />
-      )}
+      {targetHabit && (() => {
+        let hour12, minute, ampm;
+        if (targetHabit.reminder?.enabled) {
+          ({ hour12, minute, ampm } = targetHabit.reminder);
+        } else {
+          const now = new Date();
+          const h24 = now.getHours();
+          hour12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
+          minute = now.getMinutes();
+          ampm = h24 >= 12 ? 'PM' : 'AM';
+        }
+        return (
+          <TimePicker
+            visible={true}
+            hour12={hour12}
+            minute={minute}
+            ampm={ampm}
+            onClose={() => setReminderTarget(null)}
+            onSave={(t) => handleReminderSave(targetHabit.id, t)}
+            theme={theme}
+          />
+        );
+      })()}
     </SafeAreaView>
   );
 }
@@ -538,14 +498,6 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptyBody: { fontSize: 14, textAlign: 'center' },
-  overlay: { flex: 1, justifyContent: 'flex-end' },
-  overlayBg: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
-  sheet: {
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 24, paddingBottom: 40, maxHeight: '90%',
-  },
-  dragHandleArea: { alignItems: 'center', paddingVertical: 12 },
-  dragHandle: { width: 40, height: 4, borderRadius: 2 },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   sheetTitle: { fontSize: 20, fontWeight: 'bold' },
   sheetCloseBtn: { padding: 4 },
@@ -560,15 +512,6 @@ const styles = StyleSheet.create({
   volMaxRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   volMaxBtn: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, alignItems: 'center' },
   volMaxBtnText: { fontSize: 12, fontWeight: '700' },
-  sliderTrackArea: { height: 44, justifyContent: 'center', marginBottom: 4 },
-  sliderTrack: { height: 6, borderRadius: 3 },
-  sliderFill: { height: 6, borderRadius: 3 },
-  sliderThumb: {
-    position: 'absolute', width: 22, height: 22, borderRadius: 11,
-    marginLeft: -11, top: 11,
-    elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2, shadowRadius: 2,
-  },
   sliderLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
   sliderLabelText: { fontSize: 11 },
   saveBtn: { marginTop: 12, padding: 16, borderRadius: 14, alignItems: 'center' },

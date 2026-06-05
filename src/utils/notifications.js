@@ -9,27 +9,13 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function requestPermissions() {
+async function requestPermissions() {
   if (Platform.OS === 'web') return false;
   try {
     const { status } = await Notifications.requestPermissionsAsync();
     return status === 'granted';
   } catch (e) {
     return false;
-  }
-}
-
-export async function scheduleDaily(identifier, hour, minute, title, body) {
-  if (Platform.OS === 'web') return;
-  try {
-    await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
-    await Notifications.scheduleNotificationAsync({
-      identifier,
-      content: { title, body, sound: true },
-      trigger: { hour, minute, repeats: true },
-    });
-  } catch (e) {
-    console.warn('scheduleDaily failed:', e);
   }
 }
 
@@ -40,7 +26,7 @@ export async function cancelNotification(identifier) {
   } catch {}
 }
 
-export async function cancelAll() {
+async function cancelAll() {
   if (Platform.OS === 'web') return;
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
@@ -109,7 +95,3 @@ export async function applyAllReminders(settings) {
   }
 }
 
-// Legacy compat — used by SettingsScreen previously
-export async function applyNotificationSettings(settings) {
-  return applyAllReminders(settings);
-}

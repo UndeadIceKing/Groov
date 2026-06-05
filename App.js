@@ -1,13 +1,16 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, Animated, PanResponder,
-  Dimensions, Platform, StyleSheet, Easing,
+  Dimensions, Platform, StyleSheet, Easing, useColorScheme,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { AppProvider, useApp } from './src/context/AppContext';
+import { themes } from './src/theme/colors';
+import AuthScreen from './src/screens/AuthScreen';
 import TodayScreen from './src/screens/TodayScreen';
 import ProgressScreen from './src/screens/ProgressScreen';
 import ChallengeScreen from './src/screens/ChallengeScreen';
@@ -184,12 +187,34 @@ function AppNavigator() {
   );
 }
 
+// Gates the main app behind authentication.
+// Using key={session.user.id} ensures AppProvider remounts fresh on each login.
+function AuthGate() {
+  const { session, loading } = useAuth();
+  const scheme = useColorScheme();
+  const theme = themes[scheme === 'dark' ? 'dark' : 'light'];
+
+  if (loading) {
+    return <View style={{ flex: 1, backgroundColor: theme.bg }} />;
+  }
+
+  if (!session) {
+    return <AuthScreen />;
+  }
+
+  return (
+    <AppProvider key={session.user.id}>
+      <AppNavigator />
+    </AppProvider>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppProvider>
-        <AppNavigator />
-      </AppProvider>
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
