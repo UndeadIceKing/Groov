@@ -204,7 +204,7 @@ function HabitModal({ visible, editingId, form, setForm, onSave, onClose, theme 
 
                 {form.type === 'volume' && (
                   <>
-                    <Text style={[styles.label, { color: theme.textMuted }]}>Times per day — {form.volumeGoal}</Text>
+                    <Text style={[styles.label, { color: theme.textMuted }]}>Times per day: {form.volumeGoal}</Text>
                     <View style={styles.volMaxRow}>
                       {VOLUME_MAX_OPTIONS.map(opt => (
                         <TouchableOpacity
@@ -320,7 +320,7 @@ export default function HabitsScreen() {
   }, [pendingHabitLinkChallenge]);
 
   const openAdd = () => {
-    lightImpact();
+    if (settings.hapticsEnabled) lightImpact();
     setEditingId(null);
     setForm(BLANK);
     setModalVisible(true);
@@ -334,7 +334,7 @@ export default function HabitsScreen() {
 
   const handleSave = () => {
     if (!form.name.trim()) return;
-    mediumImpact();
+    if (settings.hapticsEnabled) mediumImpact();
     const habit = {
       ...form,
       name: form.name.trim(),
@@ -354,7 +354,7 @@ export default function HabitsScreen() {
   };
 
   const handleDelete = (id, name) => {
-    lightImpact();
+    if (settings.hapticsEnabled) lightImpact();
     Alert.alert('Delete Habit', `Remove "${name}"? This can't be undone.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => deleteHabit(id) },
@@ -365,7 +365,9 @@ export default function HabitsScreen() {
     const updatedReminder = { ...reminderData, enabled: true };
     const habit = habits.find(h => h.id === habitId);
     updateHabit(habitId, { reminder: updatedReminder });
-    await scheduleHabitReminder({ ...habit, reminder: updatedReminder });
+    if (settings.notificationsEnabled) {
+      await scheduleHabitReminder({ ...habit, reminder: updatedReminder });
+    }
 
     // Sync into settings.reminders so the entry appears in the Settings screen
     const reminderId = `habit-${habitId}`;

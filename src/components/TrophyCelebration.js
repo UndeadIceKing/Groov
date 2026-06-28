@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, Animated, StyleSheet, Text } from 'react-native';
 import CelebrationOverlay from './CelebrationOverlay';
-import { playHornFanfare } from '../utils/sounds';
 import { heavyImpact, mediumImpact } from '../utils/haptics';
 
 export default function TrophyCelebration({ visible, onDone, settings, theme }) {
@@ -27,12 +26,9 @@ export default function TrophyCelebration({ visible, onDone, settings, theme }) 
       }).start(({ finished }) => {
         if (finished) {
           setShowConfetti(true);
-          if (settings?.soundEnabled) playHornFanfare();
           if (settings?.hapticsEnabled) {
             heavyImpact();
-            setTimeout(() => heavyImpact(), 120);
-            setTimeout(() => heavyImpact(), 240);
-            setTimeout(() => mediumImpact(), 400);
+            setTimeout(() => mediumImpact(), 200);
           }
           setTimeout(onDone, 3500);
         }

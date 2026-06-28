@@ -128,7 +128,8 @@ async function playToneNative(frequency, duration, gain = 0.3) {
   try {
     await ensureAudioMode();
 
-    const key = `${frequency}_${Math.round(duration * 1000)}`;
+    // Include gain in the cache key so changing gain produces a fresh WAV file
+    const key = `${frequency}_${Math.round(duration * 1000)}_${Math.round(gain * 100)}`;
     const uri = await getOrCreateWav(key, frequency, duration, gain);
 
     const { sound } = await Audio.Sound.createAsync(
@@ -154,63 +155,65 @@ function playTone(frequency, duration, gain = 0.3) {
 }
 
 // ─── Public chime functions ───────────────────────────────────────────────────
+// All sounds kept soft (gain ≤ 0.18) and brief (total ≤ 350 ms).
 
+// Single soft ding — habit check-off
 export function playChime() {
-  playTone(880, 0.18, 0.25);
-  setTimeout(() => playTone(1100, 0.22, 0.2), 110);
-  setTimeout(() => playTone(1320, 0.3, 0.15), 220);
+  playTone(1047, 0.13, 0.16);
 }
 
+// Two ascending notes — habit fully completed
 export function playSuccessChime() {
-  const notes = [523, 659, 784, 1047];
-  notes.forEach((freq, i) => setTimeout(() => playTone(freq, 0.4, 0.25), i * 110));
+  playTone(784, 0.11, 0.15);
+  setTimeout(() => playTone(1047, 0.14, 0.13), 90);
 }
 
+// Three ascending notes — challenge milestone
 export function playChallengeChime() {
-  const notes = [523, 659, 784, 1047, 1319];
-  notes.forEach((freq, i) => setTimeout(() => playTone(freq, 0.5, 0.28), i * 120));
-  setTimeout(() => playTone(1047, 0.8, 0.22), 700);
+  playTone(659, 0.10, 0.14);
+  setTimeout(() => playTone(784, 0.10, 0.13), 85);
+  setTimeout(() => playTone(1047, 0.14, 0.12), 170);
 }
 
+// Four-note ascending finish — challenge completed
 export function playHornFanfare() {
-  const notes = [523, 659, 784, 1047, 1319, 1568];
-  notes.forEach((freq, i) => setTimeout(() => playTone(freq, 0.6, 0.35), i * 90));
-  setTimeout(() => playTone(1568, 1.2, 0.4), 600);
-  setTimeout(() => playTone(1319, 0.4, 0.3), 850);
-  setTimeout(() => playTone(1047, 1.5, 0.35), 1050);
+  playTone(523, 0.10, 0.14);
+  setTimeout(() => playTone(659, 0.10, 0.13), 80);
+  setTimeout(() => playTone(784, 0.10, 0.12), 160);
+  setTimeout(() => playTone(1047, 0.16, 0.12), 240);
 }
 
 // ─── Sound option samples (for user to test and choose) ───────────────────────
 
-// Option 1 — "Clean Ding": single crisp bell, very short
+// Option 1 — "Clean Ding": single crisp bell
 export function playSoundSample1() {
-  playTone(1209, 0.2, 0.32);
+  playTone(1209, 0.13, 0.18);
 }
 
-// Option 2 — "Two-Tap": two quick ascending notes (Duolingo-style confirm)
+// Option 2 — "Two-Tap": two quick ascending notes
 export function playSoundSample2() {
-  playTone(523, 0.13, 0.3);
-  setTimeout(() => playTone(784, 0.22, 0.28), 80);
+  playTone(523, 0.10, 0.16);
+  setTimeout(() => playTone(784, 0.13, 0.14), 75);
 }
 
-// Option 3 — "Soft Rise": three gentle ascending notes, warm and mellow
+// Option 3 — "Soft Rise": three gentle ascending notes
 export function playSoundSample3() {
-  [440, 554, 659].forEach((f, i) => setTimeout(() => playTone(f, 0.25, 0.24), i * 115));
+  [440, 554, 659].forEach((f, i) => setTimeout(() => playTone(f, 0.11, 0.15), i * 90));
 }
 
-// Option 4 — "Sparkle": four rapid ascending notes, bright and playful
+// Option 4 — "Sparkle": four rapid bright notes
 export function playSoundSample4() {
-  [659, 784, 988, 1319].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 0.28), i * 58));
+  [659, 784, 988, 1319].forEach((f, i) => setTimeout(() => playTone(f, 0.09, 0.15), i * 52));
 }
 
-// Option 5 — "Pop": short punchy double-tone, satisfying
+// Option 5 — "Pop": short punchy double-tone
 export function playSoundSample5() {
-  playTone(660, 0.12, 0.34);
-  setTimeout(() => playTone(990, 0.18, 0.24), 45);
+  playTone(660, 0.11, 0.18);
+  setTimeout(() => playTone(990, 0.13, 0.14), 42);
 }
 
-// Option 6 — "Coin": two sharp metallic tones, video-game style
+// Option 6 — "Coin": two soft metallic tones
 export function playSoundSample6() {
-  playTone(1320, 0.08, 0.4);
-  setTimeout(() => playTone(1760, 0.25, 0.32), 58);
+  playTone(1320, 0.08, 0.22);
+  setTimeout(() => playTone(1760, 0.12, 0.17), 52);
 }

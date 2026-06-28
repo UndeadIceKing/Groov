@@ -1,4 +1,4 @@
-# MyApp — Full App Context & Architecture
+# Groov — Full App Context & Architecture
 
 ## Overview
 
@@ -32,7 +32,7 @@ Entry point: `index.js` → `registerRootComponent(App)` → `App.js`
 ## File Structure
 
 ```
-MyApp/
+Groov/
 ├── App.js                          # Root: SafeAreaProvider + AppProvider + AppNavigator
 ├── index.js                        # Expo entry point
 ├── app.json                        # Expo app config

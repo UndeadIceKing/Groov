@@ -48,12 +48,63 @@ export async function scheduleHabitReminder(habit) {
         title: `${habit.icon} Time for: ${habit.name}`,
         body: 'Tap to log your habit!',
         sound: true,
+        color: '#4F46E5',
       },
       trigger: { hour, minute, repeats: true },
     });
   } catch (e) {
     console.warn('scheduleHabitReminder failed:', e);
   }
+}
+
+// Schedule a one-time notification for today at the given hour:minute if habits aren't done.
+// Uses a date-keyed identifier so it can be cancelled per-day once habits are completed.
+export async function scheduleEveningHabitReminder(today, hour = 20, minute = 0) {
+  if (Platform.OS === 'web') return;
+  const granted = await requestPermissions();
+  if (!granted) return;
+
+  const identifier = `evening-habit-${today}`;
+  await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
+
+  const fireDate = new Date(`${today}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`);
+  if (fireDate <= new Date()) return; // time already passed today
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier,
+      content: {
+        title: '🌙 Habit Check-in',
+        body: "You still have habits left to complete today. Keep that streak going!",
+        sound: true,
+        color: '#4F46E5',
+      },
+      trigger: { date: fireDate },
+    });
+  } catch (e) {
+    console.warn('scheduleEveningHabitReminder failed:', e);
+  }
+}
+
+export async function cancelEveningHabitReminder(today) {
+  if (Platform.OS === 'web') return;
+  await Notifications.cancelScheduledNotificationAsync(`evening-habit-${today}`).catch(() => {});
+}
+
+// Dev tool: fire an evening-style notification immediately
+export async function sendTestNotification() {
+  if (Platform.OS === 'web') return;
+  const granted = await requestPermissions();
+  if (!granted) return;
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: 'Finish Habits',
+      body: "You still have habits left to complete today. Keep that streak going!",
+      sound: true,
+      color: '#4F46E5',
+    },
+    trigger: null,
+  }).catch(() => {});
 }
 
 // Apply all reminders from the settings.reminders array
@@ -86,7 +137,7 @@ export async function applyAllReminders(settings) {
     try {
       await Notifications.scheduleNotificationAsync({
         identifier: `reminder-${r.id}`,
-        content: { title: `🔔 ${r.label}`, body: "Time to check your habits!", sound: true },
+        content: { title: `🔔 ${r.label}`, body: "Time to check your habits!", sound: true, color: '#4F46E5' },
         trigger: { hour, minute: time.minute, repeats: true },
       });
     } catch (e) {

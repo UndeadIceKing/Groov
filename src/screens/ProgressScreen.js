@@ -329,7 +329,7 @@ export default function ProgressScreen() {
 
         {/* Weekly bar chart — always 7 days */}
         <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-          <Text style={[styles.cardTitle, { color: theme.text }]}>Habits Completed — Weekly</Text>
+          <Text style={[styles.cardTitle, { color: theme.text }]}>Habits Completed: Weekly</Text>
           <Text style={[styles.cardHint, { color: theme.textMuted }]}>Tap a bar for details</Text>
           <BarChart data={chartData} labels={chartLabels} theme={theme} onBarPress={handleBarPress} futureFlags={futureFlagsBar} />
         </View>
@@ -457,7 +457,7 @@ export default function ProgressScreen() {
             <>
               {reflectionError && (
                 <Text style={[styles.cardHint, { color: theme.danger, marginTop: 4 }]}>
-                  Generation failed — please try again.
+                  Generation failed. Please try again.
                 </Text>
               )}
               <TouchableOpacity

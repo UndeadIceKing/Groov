@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { themes } from '../theme/colors';
 
 export default function AuthScreen() {
-  const [mode, setMode] = useState('login');
+  const [mode, setMode] = useState('login'); // 'login' | 'register' | 'forgot' | 'reset'
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,7 +21,13 @@ export default function AuthScreen() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const { signIn, signUp } = useAuth();
+  // Password reset fields
+  const [resetCode, setResetCode] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  const { signIn, signUp, sendPasswordReset, verifyPasswordReset } = useAuth();
   const scheme = useColorScheme();
   const theme = themes[scheme === 'dark' ? 'dark' : 'light'];
 
@@ -41,8 +47,8 @@ export default function AuthScreen() {
       setError('Passwords do not match.');
       return;
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters.');
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
       return;
     }
 
@@ -73,7 +79,49 @@ export default function AuthScreen() {
     setConfirmPassword('');
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setResetCode('');
+    setNewPassword('');
+    setConfirmNewPassword('');
   };
+
+  const handleForgotSend = async () => {
+    setError('');
+    setSuccessMsg('');
+    if (!resetEmail.trim()) { setError('Enter your email address.'); return; }
+    setLoading(true);
+    try {
+      await sendPasswordReset(resetEmail);
+      setSuccessMsg(`A reset code has been sent to ${resetEmail.trim()}. Check your email and enter the code below.`);
+      setMode('reset');
+    } catch (e) {
+      setError(e.message || 'Failed to send reset email. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetVerify = async () => {
+    setError('');
+    if (!resetCode.trim()) { setError('Enter the code from your email.'); return; }
+    if (!newPassword) { setError('Enter a new password.'); return; }
+    if (newPassword.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (newPassword !== confirmNewPassword) { setError('Passwords do not match.'); return; }
+    setLoading(true);
+    try {
+      await verifyPasswordReset(resetEmail, resetCode, newPassword);
+      setSuccessMsg('Password updated successfully! You can now log in.');
+      switchMode('login');
+    } catch (e) {
+      setError(e.message || 'Invalid or expired code. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const tagline = mode === 'login' ? 'Welcome back'
+    : mode === 'register' ? 'Create your account'
+    : mode === 'forgot' ? 'Reset your password'
+    : 'Enter your reset code';
 
   return (
     <SafeAreaView style={[s.safe, { backgroundColor: theme.bg }]}>
@@ -81,115 +129,212 @@ export default function AuthScreen() {
         <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
 
           <View style={s.header}>
-            <Text style={[s.logo, { color: theme.primary }]}>MyApp</Text>
-            <Text style={[s.tagline, { color: theme.textMuted }]}>
-              {mode === 'login' ? 'Welcome back' : 'Create your account'}
-            </Text>
+            <Text style={[s.logo, { color: theme.primary }]}>Groov</Text>
+            <Text style={[s.tagline, { color: theme.textMuted }]}>{tagline}</Text>
           </View>
 
           <View style={[s.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
 
-            <View style={[s.tabs, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-              {['login', 'register'].map(m => (
-                <TouchableOpacity
-                  key={m}
-                  style={[s.tab, mode === m && { backgroundColor: theme.primary }]}
-                  onPress={() => switchMode(m)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={[s.tabText, { color: mode === m ? '#fff' : theme.textMuted }]}>
-                    {m === 'login' ? 'Log In' : 'Register'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {/* Login / Register tabs — hidden during password reset flow */}
+            {(mode === 'login' || mode === 'register') && (
+              <View style={[s.tabs, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+                {['login', 'register'].map(m => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[s.tab, mode === m && { backgroundColor: theme.primary }]}
+                    onPress={() => switchMode(m)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[s.tabText, { color: mode === m ? '#fff' : theme.textMuted }]}>
+                      {m === 'login' ? 'Log In' : 'Register'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
 
             <View style={s.fields}>
-              {mode === 'register' && (
+              {/* ── Forgot Password: enter email ── */}
+              {mode === 'forgot' && (
                 <>
-                  <Text style={[s.label, { color: theme.textMuted }]}>Display Name</Text>
+                  <Text style={[s.label, { color: theme.textMuted }]}>Email</Text>
                   <TextInput
                     style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
-                    value={displayName}
-                    onChangeText={setDisplayName}
-                    placeholder="What should we call you?"
+                    value={resetEmail}
+                    onChangeText={setResetEmail}
+                    placeholder="you@example.com"
                     placeholderTextColor={theme.textMuted}
-                    autoCapitalize="words"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
                     autoCorrect={false}
-                    maxLength={30}
                   />
+                  {!!error && <Text style={[s.msg, { color: theme.danger }]}>{error}</Text>}
+                  {!!successMsg && <Text style={[s.msg, { color: theme.success }]}>{successMsg}</Text>}
+                  <TouchableOpacity
+                    style={[s.btn, { backgroundColor: theme.primary }, loading && s.btnDisabled]}
+                    onPress={handleForgotSend}
+                    disabled={loading}
+                    activeOpacity={0.85}
+                  >
+                    {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Send Reset Code</Text>}
+                  </TouchableOpacity>
                 </>
               )}
 
-              <Text style={[s.label, { color: theme.textMuted }]}>Email</Text>
-              <TextInput
-                style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
-                value={email}
-                onChangeText={setEmail}
-                placeholder="you@example.com"
-                placeholderTextColor={theme.textMuted}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-
-              <Text style={[s.label, { color: theme.textMuted }]}>Password</Text>
-              <View style={[s.inputWrapper, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-                <TextInput
-                  style={[s.inputInner, { color: theme.text }]}
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="••••••••"
-                  placeholderTextColor={theme.textMuted}
-                  secureTextEntry={!showPassword}
-                />
-                <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={s.eyeBtn} activeOpacity={0.6}>
-                  <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.textMuted} />
-                </TouchableOpacity>
-              </View>
-
-              {mode === 'register' && (
+              {/* ── Reset: enter code + new password ── */}
+              {mode === 'reset' && (
                 <>
-                  <Text style={[s.label, { color: theme.textMuted }]}>Confirm Password</Text>
+                  {!!successMsg && <Text style={[s.msg, { color: theme.success, marginBottom: 8 }]}>{successMsg}</Text>}
+                  <Text style={[s.label, { color: theme.textMuted }]}>Reset Code</Text>
+                  <TextInput
+                    style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+                    value={resetCode}
+                    onChangeText={setResetCode}
+                    placeholder="Code from your email"
+                    placeholderTextColor={theme.textMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <Text style={[s.label, { color: theme.textMuted }]}>New Password</Text>
+                  <TextInput
+                    style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+                    value={newPassword}
+                    onChangeText={setNewPassword}
+                    placeholder="••••••••"
+                    placeholderTextColor={theme.textMuted}
+                    secureTextEntry
+                  />
+                  <Text style={[s.label, { color: theme.textMuted }]}>Confirm New Password</Text>
+                  <TextInput
+                    style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+                    value={confirmNewPassword}
+                    onChangeText={setConfirmNewPassword}
+                    placeholder="••••••••"
+                    placeholderTextColor={theme.textMuted}
+                    secureTextEntry
+                  />
+                  {!!error && <Text style={[s.msg, { color: theme.danger }]}>{error}</Text>}
+                  <TouchableOpacity
+                    style={[s.btn, { backgroundColor: theme.primary }, loading && s.btnDisabled]}
+                    onPress={handleResetVerify}
+                    disabled={loading}
+                    activeOpacity={0.85}
+                  >
+                    {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Set New Password</Text>}
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {/* ── Login / Register fields ── */}
+              {(mode === 'login' || mode === 'register') && (
+                <>
+                  {mode === 'register' && (
+                    <>
+                      <Text style={[s.label, { color: theme.textMuted }]}>Display Name</Text>
+                      <TextInput
+                        style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+                        value={displayName}
+                        onChangeText={setDisplayName}
+                        placeholder="What should we call you?"
+                        placeholderTextColor={theme.textMuted}
+                        autoCapitalize="words"
+                        autoCorrect={false}
+                        maxLength={30}
+                      />
+                    </>
+                  )}
+
+                  <Text style={[s.label, { color: theme.textMuted }]}>Email</Text>
+                  <TextInput
+                    style={[s.input, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+                    value={email}
+                    onChangeText={setEmail}
+                    placeholder="you@example.com"
+                    placeholderTextColor={theme.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+
+                  <Text style={[s.label, { color: theme.textMuted }]}>Password</Text>
                   <View style={[s.inputWrapper, { backgroundColor: theme.bg, borderColor: theme.border }]}>
                     <TextInput
                       style={[s.inputInner, { color: theme.text }]}
-                      value={confirmPassword}
-                      onChangeText={setConfirmPassword}
+                      value={password}
+                      onChangeText={setPassword}
                       placeholder="••••••••"
                       placeholderTextColor={theme.textMuted}
-                      secureTextEntry={!showConfirmPassword}
+                      secureTextEntry={!showPassword}
                     />
-                    <TouchableOpacity onPress={() => setShowConfirmPassword(v => !v)} style={s.eyeBtn} activeOpacity={0.6}>
-                      <Ionicons name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.textMuted} />
+                    <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={s.eyeBtn} activeOpacity={0.6}>
+                      <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.textMuted} />
                     </TouchableOpacity>
                   </View>
+
+                  {mode === 'register' && (
+                    <>
+                      <Text style={[s.label, { color: theme.textMuted }]}>Confirm Password</Text>
+                      <View style={[s.inputWrapper, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+                        <TextInput
+                          style={[s.inputInner, { color: theme.text }]}
+                          value={confirmPassword}
+                          onChangeText={setConfirmPassword}
+                          placeholder="••••••••"
+                          placeholderTextColor={theme.textMuted}
+                          secureTextEntry={!showConfirmPassword}
+                        />
+                        <TouchableOpacity onPress={() => setShowConfirmPassword(v => !v)} style={s.eyeBtn} activeOpacity={0.6}>
+                          <Ionicons name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={theme.textMuted} />
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  )}
+
+                  {!!error && <Text style={[s.msg, { color: theme.danger }]}>{error}</Text>}
+                  {!!successMsg && <Text style={[s.msg, { color: theme.success }]}>{successMsg}</Text>}
+
+                  <TouchableOpacity
+                    style={[s.btn, { backgroundColor: theme.primary }, loading && s.btnDisabled]}
+                    onPress={handleSubmit}
+                    disabled={loading}
+                    activeOpacity={0.85}
+                  >
+                    {loading
+                      ? <ActivityIndicator color="#fff" />
+                      : <Text style={s.btnText}>{mode === 'login' ? 'Log In' : 'Create Account'}</Text>
+                    }
+                  </TouchableOpacity>
+
+                  {mode === 'login' && (
+                    <TouchableOpacity
+                      style={s.forgotBtn}
+                      onPress={() => { switchMode('forgot'); setResetEmail(email); }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.forgotText, { color: theme.primary }]}>Forgot password?</Text>
+                    </TouchableOpacity>
+                  )}
                 </>
               )}
-
-              {!!error && <Text style={[s.msg, { color: theme.danger }]}>{error}</Text>}
-              {!!successMsg && <Text style={[s.msg, { color: theme.success }]}>{successMsg}</Text>}
-
-              <TouchableOpacity
-                style={[s.btn, { backgroundColor: theme.primary }, loading && s.btnDisabled]}
-                onPress={handleSubmit}
-                disabled={loading}
-                activeOpacity={0.85}
-              >
-                {loading
-                  ? <ActivityIndicator color="#fff" />
-                  : <Text style={s.btnText}>{mode === 'login' ? 'Log In' : 'Create Account'}</Text>
-                }
-              </TouchableOpacity>
             </View>
           </View>
 
-          <Text style={[s.footer, { color: theme.textMuted }]}>
-            {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
-            <Text style={{ color: theme.primary }} onPress={() => switchMode(mode === 'login' ? 'register' : 'login')}>
-              {mode === 'login' ? 'Register' : 'Log in'}
+          {(mode === 'login' || mode === 'register') && (
+            <Text style={[s.footer, { color: theme.textMuted }]}>
+              {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
+              <Text style={{ color: theme.primary }} onPress={() => switchMode(mode === 'login' ? 'register' : 'login')}>
+                {mode === 'login' ? 'Register' : 'Log in'}
+              </Text>
             </Text>
-          </Text>
+          )}
+
+          {(mode === 'forgot' || mode === 'reset') && (
+            <Text style={[s.footer, { color: theme.textMuted }]}>
+              <Text style={{ color: theme.primary }} onPress={() => switchMode('login')}>
+                Back to Log In
+              </Text>
+            </Text>
+          )}
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -265,4 +410,6 @@ const s = StyleSheet.create({
   btnDisabled: { opacity: 0.7 },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   footer: { textAlign: 'center', marginTop: 24, fontSize: 14 },
+  forgotBtn: { alignItems: 'center', marginTop: 10 },
+  forgotText: { fontSize: 13 },
 });

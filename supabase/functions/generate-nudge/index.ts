@@ -16,19 +16,32 @@ function localDate(dateStr: string): Date {
   return d
 }
 
+function stripEmDashes(text: string): string {
+  return text
+    .replace(/\s*—\s*/g, ', ')
+    .replace(/\s*–\s*/g, ', ')
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  const contentLength = Number(req.headers.get('content-length') ?? '0')
+  if (contentLength > 1024) {
+    return new Response(JSON.stringify({ error: 'Request body too large' }), {
+      status: 413,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+
   try {
-    const supabase = createClient(
+    const authClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+      { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } }
     )
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    const { data: { user }, error: authError } = await authClient.auth.getUser()
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
@@ -36,22 +49,37 @@ Deno.serve(async (req: Request) => {
       })
     }
 
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    )
+
+    // Parse body — accountCreatedAt from the app resets when the user clears data,
+    // whereas user.created_at is fixed at Supabase Auth registration and never changes.
     const body = await req.json().catch(() => ({}))
-    // Prefer the client-supplied accountCreatedAt (derived from actual first usage),
-    // fall back to Supabase auth created_at only if not provided.
-    const accountCreatedStr: string = body.accountCreatedAt
-      ?? toDateOnly(user.created_at)
+    const clientAccountCreatedAt =
+      typeof body.accountCreatedAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.accountCreatedAt)
+        ? body.accountCreatedAt
+        : null
+    const displayName: string | null = typeof body.displayName === 'string' ? body.displayName : null
+
+    // Use the app-level accountCreatedAt if provided; fall back to auth creation date.
+    // This ensures the coach only analyses data from the current "session" of the account
+    // even after the user clears and starts fresh.
+    const accountCreatedStr: string = clientAccountCreatedAt ?? toDateOnly(user.created_at)
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const todayStr = toDateOnly(today.toISOString())
 
-    // Return today's cached nudge if it exists
+    // Return today's cached nudge only if it was generated after accountCreatedAt
+    // (prevents stale caches from before a data reset from being served).
     const { data: cached } = await supabase
       .from('ai_nudges')
       .select('message')
       .eq('user_id', user.id)
       .eq('date', todayStr)
+      .gte('date', accountCreatedStr)
       .maybeSingle()
 
     if (cached?.message) {
@@ -61,17 +89,34 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    const { data: recentGen } = await supabase
+      .from('ai_nudges')
+      .select('generated_at')
+      .eq('user_id', user.id)
+      .gte('generated_at', new Date(Date.now() - 60_000).toISOString())
+      .limit(1)
+      .maybeSingle()
+
+    if (recentGen) {
+      return new Response(
+        JSON.stringify({ error: 'A nudge was just generated. Please wait a moment before trying again.' }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     const accountCreatedDate = localDate(accountCreatedStr)
 
+    const today2 = new Date()
+    today2.setHours(0, 0, 0, 0)
+    const msPerDay = 1000 * 60 * 60 * 24
+
     // Global query window: up to 30 days back, no earlier than account creation
-    const rawCutoff = new Date(today)
+    const rawCutoff = new Date(today2)
     rawCutoff.setDate(rawCutoff.getDate() - 29)
     const globalCutoffDate = rawCutoff > accountCreatedDate ? rawCutoff : accountCreatedDate
     const globalCutoffStr = toDateOnly(globalCutoffDate.toISOString())
 
-    // Account-level active days (for overall streak cap)
-    const msPerDay = 1000 * 60 * 60 * 24
-    const accountActiveDays = Math.round((today.getTime() - accountCreatedDate.getTime()) / msPerDay) + 1
+    const accountActiveDays = Math.round((today2.getTime() - accountCreatedDate.getTime()) / msPerDay) + 1
 
     const [{ data: habits }, { data: completionRows }] = await Promise.all([
       supabase.from('habits').select('id, name, icon, volume_goal, created_at').eq('user_id', user.id),
@@ -89,25 +134,21 @@ Deno.serve(async (req: Request) => {
       )
     }
 
-    // Build completions lookup: date -> habitId -> count
     const completions: Record<string, Record<string, number>> = {}
     for (const row of completionRows ?? []) {
       if (!completions[row.date]) completions[row.date] = {}
       completions[row.date][row.habit_id] = row.count
     }
 
-    // Per-habit stats — each habit uses its own creation date as the floor
     const habitStats = habits.map((h) => {
       const habitCreatedStr = h.created_at ? toDateOnly(h.created_at) : accountCreatedStr
       const habitCreatedDate = localDate(habitCreatedStr)
-      // Habit's active window starts at whichever is latest: global cutoff or habit creation
       const habitStartDate = habitCreatedDate > globalCutoffDate ? habitCreatedDate : globalCutoffDate
       const habitStartStr = toDateOnly(habitStartDate.toISOString())
-      const habitActiveDays = Math.round((today.getTime() - habitStartDate.getTime()) / msPerDay) + 1
+      const habitActiveDays = Math.round((today2.getTime() - habitStartDate.getTime()) / msPerDay) + 1
 
-      // Streak: count back from today, stopping at habit start
       let streak = 0
-      const d = new Date(today)
+      const d = new Date(today2)
       while (streak < habitActiveDays) {
         const dateStr = toDateOnly(d.toISOString())
         if (((completions[dateStr] ?? {})[h.id] ?? 0) >= h.volume_goal) {
@@ -132,13 +173,11 @@ Deno.serve(async (req: Request) => {
       }
     })
 
-    // Overall streak (all habits done each day), capped at account active days
     let overallStreak = 0
-    const od = new Date(today)
+    const od = new Date(today2)
     while (overallStreak < accountActiveDays) {
       const dateStr = toDateOnly(od.toISOString())
       const day = completions[dateStr] ?? {}
-      // Only check habits that existed on this date
       const activeHabits = habits.filter(h => {
         const hCreated = h.created_at ? toDateOnly(h.created_at) : accountCreatedStr
         return dateStr >= hCreated
@@ -153,20 +192,34 @@ Deno.serve(async (req: Request) => {
     const worst = [...habitStats].sort((a, b) => a.rate - b.rate)[0]
 
     const accountAgeLine = accountActiveDays === 1
-      ? `Account active since: ${accountCreatedStr} (first day — be encouraging and welcoming)`
-      : `Account active since: ${accountCreatedStr} (${accountActiveDays} day${accountActiveDays !== 1 ? 's' : ''})`
+      ? `Account started: ${accountCreatedStr} (first day; be welcoming and encouraging)`
+      : `Account started: ${accountCreatedStr} (${accountActiveDays} day${accountActiveDays !== 1 ? 's' : ''} of data)`
 
-    const prompt = `You are a warm, encouraging habit coach. Based on the user's data below, write a concise daily nudge (2–3 sentences). Acknowledge what they're doing well using specific numbers, then give ONE actionable tip for the habit they struggle with most. Avoid generic openers like "Great job" or "Keep it up".
+    // Tell the model exactly which time spans it may reference based on data available.
+    // This prevents the coach from citing "weekly" or "monthly" trends that don't exist yet.
+    const timeSpanRule =
+      accountActiveDays <= 3
+        ? `DATA WINDOW: Only ${accountActiveDays} day${accountActiveDays !== 1 ? 's' : ''} of data exist. Base ALL percentages and observations on exactly these ${accountActiveDays} days. Do NOT mention weekly or monthly trends.`
+        : accountActiveDays <= 6
+        ? `DATA WINDOW: ${accountActiveDays} days of data. Reference only this ${accountActiveDays}-day window. Weekly averages are not yet meaningful, avoid them.`
+        : accountActiveDays <= 13
+        ? `DATA WINDOW: ${accountActiveDays} days of data. You may reference trends over the past week. Do not reference monthly patterns.`
+        : `DATA WINDOW: ${accountActiveDays} days of data. Weekly and multi-week trends are appropriate.`
 
-IMPORTANT: Each habit shows its own active days since it was created. Use each habit's own denominator for its completion rate — never assume all habits have been active for the same number of days.
+    const namePrefix = displayName ? `The user's name is ${displayName}. ` : ''
+
+    const prompt = `You are a warm, encouraging habit coach. ${namePrefix}Based on the user's data below, write a concise daily nudge (2-3 sentences). Acknowledge what they are doing well using specific numbers, then give ONE actionable tip for the habit they struggle with most. Avoid generic openers like "Great job" or "Keep it up". Never use em dashes (the long dash) or en dashes in your response - use commas, hyphens, or separate sentences instead.
+
+${timeSpanRule}
+IMPORTANT: Each habit shows its own active days since it was created. Use each habit's own denominator for its completion rate.
 
 Today: ${todayStr}
 ${accountAgeLine}
 Overall streak: ${overallStreak} day${overallStreak !== 1 ? 's' : ''}
-Strongest habit: ${best.icon} ${best.name} — ${best.streak}-day streak, ${best.completedDays}/${best.activeDays} active days (${best.rate}%)
-Needs work: ${worst.icon} ${worst.name} — ${worst.streak}-day streak, ${worst.completedDays}/${worst.activeDays} active days (${worst.rate}%)
+Strongest habit: ${best.icon} ${best.name} - ${best.streak}-day streak, ${best.completedDays}/${best.activeDays} active days (${best.rate}%)
+Needs work: ${worst.icon} ${worst.name} - ${worst.streak}-day streak, ${worst.completedDays}/${worst.activeDays} active days (${worst.rate}%)
 All habits:
-${habitStats.map((h) => `  • ${h.icon} ${h.name}: ${h.streak}-day streak, ${h.completedDays}/${h.activeDays} days (${h.rate}%) — active since ${h.createdStr}`).join('\n')}
+${habitStats.map((h) => `  * ${h.icon} ${h.name}: ${h.streak}-day streak, ${h.completedDays}/${h.activeDays} days (${h.rate}%) - active since ${h.createdStr}`).join('\n')}
 
 Write the nudge:`
 
@@ -177,8 +230,8 @@ Write the nudge:`
       messages: [{ role: 'user', content: prompt }],
     })
 
-    const message =
-      aiResponse.content[0].type === 'text' ? aiResponse.content[0].text.trim() : ''
+    const raw = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text.trim() : ''
+    const message = stripEmDashes(raw)
 
     await supabase.from('ai_nudges').upsert({ user_id: user.id, date: todayStr, message })
 
@@ -187,8 +240,8 @@ Write the nudge:`
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } catch (err) {
-    console.error('generate-nudge error:', err)
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
+    console.error('generate-nudge error:', (err as Error).message)
+    return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

@@ -3,16 +3,32 @@ import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
   TouchableOpacity, ActivityIndicator,
 } from 'react-native';
+import Svg, { Path, Rect } from 'react-native-svg';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import HabitCard from '../components/HabitCard';
 import EmptyCard from '../components/EmptyCard';
 import ProgressRing from '../components/ProgressRing';
 import CelebrationOverlay from '../components/CelebrationOverlay';
 import CompletionCelebration from '../components/CompletionCelebration';
 import TrophyCelebration from '../components/TrophyCelebration';
-import { playChime, playSuccessChime, playChallengeChime } from '../utils/sounds';
-import { mediumImpact, heavyImpact, lightImpact, successNotification } from '../utils/haptics';
+import ChallengeRewardModal from '../components/ChallengeRewardModal';
+import { successNotification, mediumImpact } from '../utils/haptics';
 import { fetchDailyNudge } from '../services/aiCoaching';
+import { scheduleEveningHabitReminder, cancelEveningHabitReminder } from '../utils/notifications';
+
+function SproutIcon({ size = 24 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 20 20">
+      {/* Stem — drawn first so leaves sit on top */}
+      <Rect x="9.25" y="3" width="1.5" height="16" rx="0.75" fill="#F5C518" />
+      {/* Left leaf — branches off the left side of the stem, curves up-left to a point */}
+      <Path d="M 10 13 C 5 12 1 8 3 5 C 5 3 9 5 10 9 Z" fill="#F5C518" />
+      {/* Right leaf — mirror image, branches right and curves up-right */}
+      <Path d="M 10 13 C 15 12 19 8 17 5 C 15 3 11 5 10 9 Z" fill="#F5C518" />
+    </Svg>
+  );
+}
 
 function getGreeting(offset = 0) {
   const h = new Date().getHours();
@@ -27,17 +43,9 @@ function getDateString(offset = 0) {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-async function hapticFillSequence(hapticsEnabled) {
+function hapticFillSequence(hapticsEnabled) {
   if (!hapticsEnabled) return;
-  const timings = [0, 70, 140, 200, 260, 310, 360, 410, 450, 490];
-  for (const ms of timings) {
-    setTimeout(() => lightImpact(), ms);
-  }
-  setTimeout(() => mediumImpact(), 530);
-  setTimeout(() => mediumImpact(), 580);
-  setTimeout(() => heavyImpact(), 680);
-  setTimeout(() => heavyImpact(), 720);
-  setTimeout(() => successNotification(), 780);
+  successNotification();
 }
 
 function getRelevantHabits(challenge, habits) {
@@ -56,15 +64,21 @@ function isChallengeExpiredFor(ch, today) {
 
 export default function TodayScreen() {
   const {
-    habits, challenges, completions, getCompletedCount, isAllDone, incrementHabit, decrementHabit,
+    habits, challenges, effectiveChallenges, completions, getCompletedCount, isAllDone,
+    incrementHabit, decrementHabit,
     isChallengeHabitsDone, settings, theme, markChallengeDay, unmarkChallengeDay,
     getHabitCount, dateOffset, todayStr, accountCreatedAt, displayName, isDevEmail,
     completeChallengeImmediately, selectAllHabitsToday, resetAllHabitsToday,
+    pendingChallengeRewards, clearPendingChallengeRewards,
   } = useApp();
+  const { user } = useAuth();
 
   const [celebrating, setCelebrating] = useState(false);
   const [fullCelebration, setFullCelebration] = useState(false);
   const [trophyCelebrating, setTrophyCelebrating] = useState(false);
+  const [rewardModalVisible, setRewardModalVisible] = useState(false);
+  const [rewardsToShow, setRewardsToShow] = useState([]);
+  const rewardModalShown = useRef(false);
   const allDoneCelebrated = useRef(false);
 
   const [nudgeMessage, setNudgeMessage] = useState(null);
@@ -76,6 +90,19 @@ export default function TodayScreen() {
   useEffect(() => {
     allDoneCelebrated.current = false;
   }, [today]);
+
+  // Show challenge reward popup once per session when pending rewards exist.
+  // Delayed 600ms so ChallengeScreen's mount-time archiving effects can run first.
+  useEffect(() => {
+    if (rewardModalShown.current) return;
+    if (pendingChallengeRewards.length === 0) return;
+    rewardModalShown.current = true;
+    const t = setTimeout(() => {
+      setRewardsToShow([...pendingChallengeRewards]);
+      setRewardModalVisible(true);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [pendingChallengeRewards]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Number of complete days that have passed since account creation (0 on day 1).
   // Only whole days before today count — today's data is still in flux.
@@ -90,20 +117,34 @@ export default function TodayScreen() {
 
   // Fetch daily nudge once when habits are available, but only from day 2 onwards
   // so the coach always works from at least one full day of completed history.
+  // Requires an authenticated session — skip silently if not logged in.
   useEffect(() => {
-    if (habits.length === 0 || nudgeFetched.current || !canShowNudge) return;
+    if (!user || habits.length === 0 || nudgeFetched.current || !canShowNudge) return;
     nudgeFetched.current = true;
     setNudgeLoading(true);
     fetchDailyNudge(accountCreatedAt, displayName, excludeDate)
       .then((data) => { if (data?.message) setNudgeMessage(data.message); })
       .catch(() => {})
       .finally(() => setNudgeLoading(false));
-  }, [habits.length, canShowNudge]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user, habits.length, canShowNudge]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Schedule a one-time evening notification if habits aren't done; cancel it when they are.
+  const allDone = isAllDone();
+  useEffect(() => {
+    if (!settings.notificationsEnabled || !settings.eveningReminderEnabled) {
+      cancelEveningHabitReminder(today);
+      return;
+    }
+    if (allDone || habits.length === 0) {
+      cancelEveningHabitReminder(today);
+    } else {
+      scheduleEveningHabitReminder(today, settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
+    }
+  }, [allDone, today, habits.length, settings.notificationsEnabled, settings.eveningReminderEnabled, settings.eveningReminderHour, settings.eveningReminderMinute]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const completed = getCompletedCount();
   const total = habits.length;
   const progress = total > 0 ? completed / total : 0;
-  const allDone = isAllDone();
 
   // Shared logic for auto-claiming/completing challenges after habits are done.
   // Returns { anyClaimed, anyComplete } so callers can trigger sounds/trophies.
@@ -112,7 +153,12 @@ export default function TodayScreen() {
     let anyClaimed = false;
     let anyComplete = false;
 
-    challenges.forEach(ch => {
+    // Use effectiveChallenges so completedDays are filtered to <= today.
+    // The raw challenges array keeps future-dated entries when the dev-tool date offset is
+    // rewound, which would inflate the completion count and trigger early completion.
+    // Skip any "reverted" challenge that lives in pastChallenges rather than challenges.
+    effectiveChallenges.forEach(ch => {
+      if (!challenges.some(c => c.id === ch.id)) return;
       if (ch.completedDays.includes(today)) return;
       if (isChallengeExpiredFor(ch, today)) return;
 
@@ -137,12 +183,11 @@ export default function TodayScreen() {
     });
 
     return { anyClaimed, anyComplete };
-  }, [challenges, habits, getHabitCount, markChallengeDay, completeChallengeImmediately, todayStr]);
+  }, [effectiveChallenges, challenges, habits, getHabitCount, markChallengeDay, completeChallengeImmediately, todayStr]);
 
   const handleIncrement = useCallback(async (habit) => {
     const justCompleted = incrementHabit(habit.id);
     if (settings.hapticsEnabled) await mediumImpact();
-    if (justCompleted && settings.soundEnabled) playChime();
 
     if (justCompleted) {
       // Compute synchronously: this habit just hit its goal; check every other habit
@@ -154,12 +199,10 @@ export default function TodayScreen() {
       });
 
       const { anyClaimed, anyComplete } = autoClaimChallenges(habit.id);
-      if (anyClaimed && settings.soundEnabled) playChallengeChime();
       if (anyComplete) setTimeout(() => setTrophyCelebrating(true), 100);
 
       if (willAllBeDone && !allDoneCelebrated.current) {
         allDoneCelebrated.current = true;
-        if (settings.soundEnabled) playSuccessChime();
         hapticFillSequence(settings.hapticsEnabled);
         setFullCelebration(true);
       }
@@ -177,7 +220,8 @@ export default function TodayScreen() {
 
     // Only unmark challenge days when this habit transitions from done → not done
     if (habitWasDone && !habitStillDone) {
-      challenges.forEach(ch => {
+      effectiveChallenges.forEach(ch => {
+        if (!challenges.some(c => c.id === ch.id)) return;
         if (!ch.completedDays.includes(today)) return;
         const relevant = getRelevantHabits(ch, habits);
         if (relevant.some(h => h.id === habit.id)) {
@@ -185,7 +229,7 @@ export default function TodayScreen() {
         }
       });
     }
-  }, [decrementHabit, challenges, habits, getHabitCount, unmarkChallengeDay, todayStr]);
+  }, [decrementHabit, effectiveChallenges, challenges, habits, getHabitCount, unmarkChallengeDay, todayStr]);
 
   const handleSelectAll = useCallback(async () => {
     const today = todayStr();
@@ -194,18 +238,17 @@ export default function TodayScreen() {
       // Unselect all
       resetAllHabitsToday();
       allDoneCelebrated.current = false;
-      challenges.forEach(ch => {
+      effectiveChallenges.forEach(ch => {
+        if (!challenges.some(c => c.id === ch.id)) return;
         if (ch.completedDays.includes(today)) unmarkChallengeDay(ch.id);
       });
     } else {
       selectAllHabitsToday();
       // assumeAllDone=true because selectAllHabitsToday hasn't flushed to state yet
       const { anyClaimed, anyComplete } = autoClaimChallenges(null, true);
-      if (anyClaimed && settings.soundEnabled) playChallengeChime();
 
       if (!allDoneCelebrated.current) {
         allDoneCelebrated.current = true;
-        if (settings.soundEnabled) playSuccessChime();
         hapticFillSequence(settings.hapticsEnabled);
         setFullCelebration(true);
       }
@@ -214,7 +257,7 @@ export default function TodayScreen() {
       }
     }
   }, [
-    allDone, challenges, todayStr,
+    allDone, effectiveChallenges, challenges, todayStr,
     autoClaimChallenges, selectAllHabitsToday, resetAllHabitsToday,
     unmarkChallengeDay, settings,
   ]);
@@ -228,15 +271,13 @@ export default function TodayScreen() {
       >
         {/* Header */}
         <View style={[styles.header, { backgroundColor: theme.primary }]}>
-          <Text style={styles.greeting}>
-            {getGreeting(dateOffset)}{displayName ? `, ${displayName}` : ''} 👋
-          </Text>
-          <Text style={styles.date}>{getDateString(dateOffset)}</Text>
-          {dateOffset !== 0 && (
-            <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11, marginTop: 2 }}>
-              (Simulated date{dateOffset > 0 ? ' +' : ' '}{dateOffset}d)
+          <View style={styles.greetingRow}>
+            <Text style={styles.greeting}>
+              {getGreeting(dateOffset)}{displayName ? `, ${displayName}` : ''}
             </Text>
-          )}
+            <SproutIcon size={26} />
+          </View>
+          <Text style={styles.date}>{getDateString(dateOffset)}</Text>
 
           <View style={styles.ringRow}>
             <ProgressRing
@@ -304,6 +345,45 @@ export default function TodayScreen() {
               ))}
             </>
           )}
+
+          {/* Active Challenges */}
+          {effectiveChallenges.filter(ch => !isChallengeExpiredFor(ch, today)).length > 0 && (
+            <View style={styles.challengesSection}>
+              <Text style={[styles.sectionLabel, { color: theme.textMuted }]}>ACTIVE CHALLENGES</Text>
+              {effectiveChallenges
+                .filter(ch => !isChallengeExpiredFor(ch, today))
+                .map(ch => {
+                  const completedCount = ch.completedDays.length;
+                  const todayDone = ch.completedDays.includes(today);
+                  const progress = ch.days > 0 ? completedCount / ch.days : 0;
+                  const currentDay = Math.min(ch.days, Math.max(1,
+                    ch.startDate
+                      ? Math.floor((new Date(today + 'T00:00:00') - new Date(ch.startDate + 'T00:00:00')) / 86400000) + 1
+                      : 1
+                  ));
+                  return (
+                    <View key={ch.id} style={[styles.challengeMini, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                      <View style={styles.challengeMiniRow}>
+                        <Text style={styles.challengeMiniIcon}>{ch.icon || '🏆'}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.challengeMiniName, { color: theme.text }]} numberOfLines={1}>{ch.name}</Text>
+                          <Text style={[styles.challengeMiniSub, { color: theme.textMuted }]}>
+                            Day {currentDay} of {ch.days} · {completedCount} logged
+                          </Text>
+                        </View>
+                        {todayDone
+                          ? <Text style={[styles.challengeMiniStatus, { color: theme.success }]}>✅ Done</Text>
+                          : <Text style={[styles.challengeMiniStatus, { color: theme.textMuted }]}>Pending</Text>
+                        }
+                      </View>
+                      <View style={[styles.challengeMiniProgressBg, { backgroundColor: theme.progressBarBg }]}>
+                        <View style={[styles.challengeMiniProgressFill, { width: `${Math.round(progress * 100)}%`, backgroundColor: theme.primary }]} />
+                      </View>
+                    </View>
+                  );
+                })}
+            </View>
+          )}
         </View>
       </ScrollView>
 
@@ -324,6 +404,17 @@ export default function TodayScreen() {
         settings={settings}
         theme={theme}
       />
+
+      {rewardModalVisible && (
+        <ChallengeRewardModal
+          challenges={rewardsToShow}
+          onDismiss={() => {
+            setRewardModalVisible(false);
+            clearPendingChallengeRewards();
+          }}
+          theme={theme}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -337,7 +428,13 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     borderBottomLeftRadius: 28,
     borderBottomRightRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
   },
+  greetingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   greeting: { fontSize: 22, fontWeight: 'bold', color: '#fff' },
   date: { fontSize: 13, color: 'rgba(255,255,255,0.7)', marginTop: 2, marginBottom: 20 },
   ringRow: { flexDirection: 'row', alignItems: 'center', gap: 20 },
@@ -369,4 +466,15 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptyBody: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  challengesSection: { marginTop: 24 },
+  challengeMini: {
+    borderRadius: 14, borderWidth: 1, padding: 14, marginTop: 8,
+  },
+  challengeMiniRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
+  challengeMiniIcon: { fontSize: 24 },
+  challengeMiniName: { fontSize: 14, fontWeight: '700' },
+  challengeMiniSub: { fontSize: 12, marginTop: 1 },
+  challengeMiniStatus: { fontSize: 13, fontWeight: '600' },
+  challengeMiniProgressBg: { height: 5, borderRadius: 3, overflow: 'hidden' },
+  challengeMiniProgressFill: { height: 5, borderRadius: 3 },
 });

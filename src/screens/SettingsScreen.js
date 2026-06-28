@@ -1,30 +1,31 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
   Switch, TouchableOpacity, Alert, Platform, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import TimePicker from '../components/TimePicker';
-import { applyAllReminders, cancelNotification, scheduleHabitReminder } from '../utils/notifications';
+import { applyAllReminders, cancelNotification, scheduleHabitReminder, cancelEveningHabitReminder, sendTestNotification } from '../utils/notifications';
 import { lightImpact, mediumImpact } from '../utils/haptics';
-import {
-  playChime,
-  playSoundSample1, playSoundSample2, playSoundSample3,
-  playSoundSample4, playSoundSample5, playSoundSample6,
-} from '../utils/sounds';
 
-// Accounts that always have dev tool access
-const DEV_EMAILS = ['beastlyiceking@gmail.com'];
-// Secret code that unlocks dev tools for the session (tap version label 7× then enter)
+// Secret code for first-time dev unlock (tap version label 7× then enter)
 const DEV_CODE = 'devmode';
+const DEV_STORE_KEY = 'GROOV_DEV_DEVICE_OWNER';
 
 function formatTime(t) {
-  if (!t) return '—';
+  if (!t) return '-';
   const { hour12, minute, ampm } = t;
-  if (hour12 === undefined) return '—';
+  if (hour12 === undefined) return '-';
   return `${hour12}:${String(minute).padStart(2, '0')} ${ampm}`;
+}
+
+function h24ToTimeParts(h24, minute) {
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const hour12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
+  return { hour12, minute: minute ?? 0, ampm };
 }
 
 function Row({ label, sublabel, right, theme, onPress }) {
@@ -53,27 +54,127 @@ function Section({ title, children, theme }) {
 }
 
 export default function SettingsScreen() {
-  const { settings, updateSettings, theme, resetAll, dateOffset, setDateOffset, habits, updateHabit } = useApp();
-  const { user, signOut, displayName } = useAuth();
+  const { settings, updateSettings, theme, resetAll, dateOffset, setDateOffset, habits, updateHabit, pushAllData, seedRandomHistory } = useApp();
+  const { user, signOut, displayName, deleteAccount, sendPasswordReset, verifyPasswordReset } = useAuth();
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => signOut() },
+      {
+        text: 'Sign Out', style: 'destructive', onPress: async () => {
+          try { await pushAllData(); } catch (e) {}
+          signOut();
+        },
+      },
     ]);
   };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account and all associated data including habits, progress, challenges, and settings. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Are you absolutely sure?',
+              'Your account will be permanently deleted. You will not be able to recover it.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Delete Everything',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      await deleteAccount();
+                    } catch (e) {
+                      Alert.alert('Error', e.message || 'Failed to delete account. Please try again.');
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  // Password reset state (from Settings)
+  const [resetStep, setResetStep] = useState(null); // null | 'sent' | 'verify'
+  const [resetCode, setResetCode] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState('');
+
+  const handleResetPassword = () => {
+    Alert.alert(
+      'Reset Password',
+      `A password reset code will be sent to ${user?.email ?? 'your email'}. Continue?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send Code',
+          onPress: async () => {
+            setResetLoading(true);
+            setResetError('');
+            try {
+              await sendPasswordReset(user?.email ?? '');
+              setResetStep('verify');
+              setResetCode('');
+              setResetNewPassword('');
+              setResetConfirmPassword('');
+            } catch (e) {
+              Alert.alert('Error', e.message || 'Failed to send reset email.');
+            } finally {
+              setResetLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleVerifyReset = async () => {
+    if (!resetCode.trim()) { setResetError('Enter the code from your email.'); return; }
+    if (!resetNewPassword) { setResetError('Enter a new password.'); return; }
+    if (resetNewPassword.length < 8) { setResetError('Password must be at least 8 characters.'); return; }
+    if (resetNewPassword !== resetConfirmPassword) { setResetError('Passwords do not match.'); return; }
+    setResetLoading(true);
+    setResetError('');
+    try {
+      await verifyPasswordReset(user?.email ?? '', resetCode, resetNewPassword);
+      setResetStep(null);
+      Alert.alert('Success', 'Your password has been updated.');
+    } catch (e) {
+      setResetError(e.message || 'Invalid or expired code. Please try again.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const [timeModal, setTimeModal] = useState(null);
   const [editingLabel, setEditingLabel] = useState(null);
   const [labelDraft, setLabelDraft] = useState('');
+  const [eveningTimeModal, setEveningTimeModal] = useState(false);
 
-  // Dev tools access
-  const isDevEmail = DEV_EMAILS.includes((user?.email ?? '').toLowerCase());
+  // Dev tools — locked to this specific device via SecureStore
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devTapCount, setDevTapCount] = useState(0);
   const [showDevInput, setShowDevInput] = useState(false);
   const [devCodeDraft, setDevCodeDraft] = useState('');
   const devTapTimer = useRef(null);
-  const showDevTools = isDevEmail || devUnlocked;
+  const showDevTools = devUnlocked;
+
+  useEffect(() => {
+    SecureStore.getItemAsync(DEV_STORE_KEY).then(val => {
+      if (val === 'true') setDevUnlocked(true);
+    }).catch(() => {});
+  }, []);
 
   const handleVersionTap = () => {
     if (showDevTools) return;
@@ -87,13 +188,14 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleDevCodeSubmit = () => {
+  const handleDevCodeSubmit = async () => {
     if (devCodeDraft === DEV_CODE) {
+      await SecureStore.setItemAsync(DEV_STORE_KEY, 'true').catch(() => {});
       setDevUnlocked(true);
       setShowDevInput(false);
       setDevCodeDraft('');
       lightImpact();
-      Alert.alert('Developer Mode', 'Dev tools unlocked for this session.');
+      Alert.alert('Developer Mode', 'Dev tools unlocked on this device permanently.');
     } else {
       Alert.alert('Invalid Code', 'That code is incorrect.');
       setDevCodeDraft('');
@@ -130,7 +232,9 @@ export default function SettingsScreen() {
       if (habit) {
         const updatedReminder = { hour12: time.hour12, minute: time.minute, ampm: time.ampm, enabled: r.enabled };
         updateHabit(r.habitId, { reminder: updatedReminder });
-        scheduleHabitReminder({ ...habit, reminder: updatedReminder });
+        if (settings.notificationsEnabled) {
+          scheduleHabitReminder({ ...habit, reminder: updatedReminder });
+        }
       }
     }
   };
@@ -140,7 +244,7 @@ export default function SettingsScreen() {
       Alert.alert('Limit reached', 'You can have up to 6 reminders.');
       return;
     }
-    lightImpact();
+    if (settings.hapticsEnabled) lightImpact();
     const now = new Date();
     const h24 = now.getHours();
     const minute = now.getMinutes();
@@ -157,7 +261,7 @@ export default function SettingsScreen() {
 
   const removeReminder = (idx) => {
     const r = reminders[idx];
-    lightImpact();
+    if (settings.hapticsEnabled) lightImpact();
     Alert.alert('Remove Reminder', 'Delete this reminder?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -330,23 +434,48 @@ export default function SettingsScreen() {
             <Ionicons name="add-circle-outline" size={18} color={theme.primary} />
             <Text style={[styles.addReminderText, { color: theme.primary }]}>Add Reminder</Text>
           </TouchableOpacity>
+
+          {/* Evening habit check notification */}
+          {(() => {
+            const evParts = h24ToTimeParts(settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
+            const evEnabled = !!(settings.eveningReminderEnabled && settings.notificationsEnabled);
+            return (
+              <View style={[styles.reminderBlock, { borderTopColor: theme.border }]}>
+                <View style={styles.reminderLabelRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.reminderLabel, { color: theme.text }]}>Evening Habit Reminder</Text>
+                    <Text style={[styles.reminderSublabel, { color: theme.textMuted }]}>
+                      {evEnabled
+                        ? `Fires at ${formatTime(evParts)} if habits aren't done`
+                        : 'Reminds you to finish habits in the evening'}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={evEnabled}
+                    onValueChange={v => {
+                      updateSettings({ eveningReminderEnabled: v });
+                      if (!v) cancelEveningHabitReminder(new Date().toISOString().split('T')[0]);
+                    }}
+                    trackColor={{ false: theme.border, true: theme.primary }}
+                    thumbColor="#fff"
+                    style={{ opacity: settings.notificationsEnabled ? 1 : 0.4 }}
+                  />
+                </View>
+                <View style={styles.reminderActionsRow}>
+                  <TouchableOpacity
+                    style={[styles.timeBtn, { borderColor: theme.border, opacity: evEnabled ? 1 : 0.4 }]}
+                    onPress={() => evEnabled && setEveningTimeModal(true)}
+                  >
+                    <Text style={[styles.timeBtnText, { color: theme.primary }]}>{formatTime(evParts)}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })()}
         </Section>
 
         {/* Feedback */}
         <Section title="FEEDBACK" theme={theme}>
-          <Row
-            label="Sound Effects"
-            sublabel="Chime when completing a habit"
-            theme={theme}
-            right={
-              <Switch
-                value={settings.soundEnabled}
-                onValueChange={v => updateSettings({ soundEnabled: v })}
-                trackColor={{ false: theme.border, true: theme.primary }}
-                thumbColor="#fff"
-              />
-            }
-          />
           <Row
             label="Haptic Feedback"
             sublabel="Vibration on check-off (device only)"
@@ -360,37 +489,12 @@ export default function SettingsScreen() {
               />
             }
           />
-          <View style={[styles.soundTestBlock, { borderTopColor: theme.border }]}>
-            <Text style={[styles.soundTestLabel, { color: theme.text }]}>Test Sounds</Text>
-            <Text style={[styles.soundTestSub, { color: theme.textMuted }]}>
-              Tap each to preview — let us know which you prefer
-            </Text>
-            <View style={styles.soundTestGrid}>
-              {[
-                { label: 'Clean Ding', fn: playSoundSample1 },
-                { label: 'Two-Tap', fn: playSoundSample2 },
-                { label: 'Soft Rise', fn: playSoundSample3 },
-                { label: 'Sparkle', fn: playSoundSample4 },
-                { label: 'Pop', fn: playSoundSample5 },
-                { label: 'Coin', fn: playSoundSample6 },
-              ].map(({ label, fn }) => (
-                <TouchableOpacity
-                  key={label}
-                  style={[styles.soundTestBtn, { borderColor: theme.border, backgroundColor: theme.bg }]}
-                  onPress={() => { lightImpact(); fn(); }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="volume-medium-outline" size={14} color={theme.primary} />
-                  <Text style={[styles.soundTestBtnText, { color: theme.text }]}>{label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
         </Section>
 
-        {/* Dev Tools — only visible to authorised emails or unlocked sessions */}
+        {/* Dev Tools — only visible in development builds after entering the code */}
         {showDevTools && (
           <Section title="DEV TOOLS" theme={theme}>
+            {/* Date offset */}
             <View style={[styles.row, { borderBottomColor: theme.border }]}>
               <View style={styles.rowLeft}>
                 <Text style={[styles.rowLabel, { color: theme.text }]}>Simulated Date</Text>
@@ -416,6 +520,49 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               </View>
             </View>
+
+            {/* Simulate push notification */}
+            <TouchableOpacity
+              style={[styles.row, { borderBottomColor: theme.border }]}
+              onPress={async () => {
+                await sendTestNotification();
+                Alert.alert('Sent', 'Test notification fired. Check your notification tray.');
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.rowLeft}>
+                <Text style={[styles.rowLabel, { color: theme.text }]}>Send Test Notification</Text>
+                <Text style={[styles.rowSub, { color: theme.textMuted }]}>Fires the evening reminder immediately</Text>
+              </View>
+              <Ionicons name="notifications-outline" size={20} color={theme.primary} />
+            </TouchableOpacity>
+
+            {/* Seed 30-day random history */}
+            <TouchableOpacity
+              style={[styles.row, { borderBottomColor: theme.border }]}
+              onPress={() => {
+                Alert.alert(
+                  'Generate 30-Day History',
+                  'This will fill the last 30 days with random completions. Existing history will be overwritten.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Generate', onPress: async () => {
+                        await seedRandomHistory();
+                        Alert.alert('Done', '30 days of random history added.');
+                      },
+                    },
+                  ]
+                );
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.rowLeft}>
+                <Text style={[styles.rowLabel, { color: theme.text }]}>Generate 30-Day History</Text>
+                <Text style={[styles.rowSub, { color: theme.textMuted }]}>Random completions for the past 30 days</Text>
+              </View>
+              <Ionicons name="calendar-outline" size={20} color={theme.primary} />
+            </TouchableOpacity>
           </Section>
         )}
 
@@ -435,23 +582,45 @@ export default function SettingsScreen() {
             theme={theme}
             right={null}
           />
-          <TouchableOpacity style={styles.dangerRow} onPress={handleSignOut}>
+          <TouchableOpacity
+            style={[styles.dangerRow, { borderBottomWidth: 1, borderBottomColor: theme.border }]}
+            onPress={handleSignOut}
+          >
             <Text style={styles.dangerText}>Sign Out</Text>
           </TouchableOpacity>
         </Section>
 
         {/* Data */}
         <Section title="DATA" theme={theme}>
-          <TouchableOpacity style={styles.dangerRow} onPress={handleClearData}>
+          <TouchableOpacity
+            style={[styles.dangerRow, { borderBottomWidth: 1, borderBottomColor: theme.border }]}
+            onPress={handleResetPassword}
+            disabled={resetLoading}
+          >
+            <Text style={[styles.dangerText, { color: theme.primary }]}>Reset Password</Text>
+            <Text style={[styles.dangerSub, { color: theme.textMuted }]}>
+              Send a reset code to your email
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.dangerRow, { borderBottomWidth: 1, borderBottomColor: theme.border }]}
+            onPress={handleClearData}
+          >
             <Text style={styles.dangerText}>Clear All Data</Text>
             <Text style={[styles.dangerSub, { color: theme.textMuted }]}>
               Permanently removes all habits, progress, and settings
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.dangerRow} onPress={handleDeleteAccount}>
+            <Text style={styles.dangerText}>Delete Account</Text>
+            <Text style={[styles.dangerSub, { color: theme.textMuted }]}>
+              Permanently removes your account and all data
+            </Text>
+          </TouchableOpacity>
         </Section>
 
         <TouchableOpacity onPress={handleVersionTap} activeOpacity={0.7} style={styles.versionBtn}>
-          <Text style={[styles.version, { color: theme.textMuted }]}>Habit Tracker v1.0</Text>
+          <Text style={[styles.version, { color: theme.textMuted }]}>Groov v1.0</Text>
           {devTapCount > 2 && !showDevTools && (
             <Text style={[styles.devHint, { color: theme.textMuted }]}>
               {7 - devTapCount} more tap{7 - devTapCount !== 1 ? 's' : ''} to unlock dev tools
@@ -459,6 +628,64 @@ export default function SettingsScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Password Reset Modal */}
+      {resetStep === 'verify' && (
+        <View style={styles.devModal}>
+          <View style={[styles.devModalCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <Text style={[styles.devModalTitle, { color: theme.text }]}>Reset Password</Text>
+            <Text style={[styles.devModalSub, { color: theme.textMuted }]}>
+              A reset code was sent to {user?.email}. Enter it below along with your new password.
+            </Text>
+            <TextInput
+              style={[styles.devModalInput, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+              value={resetCode}
+              onChangeText={setResetCode}
+              placeholder="Reset code from email"
+              placeholderTextColor={theme.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TextInput
+              style={[styles.devModalInput, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text }]}
+              value={resetNewPassword}
+              onChangeText={setResetNewPassword}
+              placeholder="New password"
+              placeholderTextColor={theme.textMuted}
+              secureTextEntry
+            />
+            <TextInput
+              style={[styles.devModalInput, { backgroundColor: theme.bg, borderColor: theme.border, color: theme.text, marginBottom: 4 }]}
+              value={resetConfirmPassword}
+              onChangeText={setResetConfirmPassword}
+              placeholder="Confirm new password"
+              placeholderTextColor={theme.textMuted}
+              secureTextEntry
+            />
+            {!!resetError && (
+              <Text style={[styles.devModalSub, { color: theme.danger, marginBottom: 8 }]}>{resetError}</Text>
+            )}
+            <View style={styles.devModalBtns}>
+              <TouchableOpacity
+                style={[styles.devModalBtn, { borderColor: theme.border }]}
+                onPress={() => { setResetStep(null); setResetError(''); }}
+                disabled={resetLoading}
+              >
+                <Text style={[styles.devModalBtnText, { color: theme.textMuted }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.devModalBtn, { backgroundColor: theme.primary, borderColor: theme.primary, opacity: resetLoading ? 0.6 : 1 }]}
+                onPress={handleVerifyReset}
+                disabled={resetLoading}
+              >
+                <Text style={[styles.devModalBtnText, { color: '#fff' }]}>
+                  {resetLoading ? 'Saving…' : 'Set Password'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
 
       {/* Dev code entry modal */}
       {showDevInput && (
@@ -509,6 +736,25 @@ export default function SettingsScreen() {
           theme={theme}
         />
       )}
+
+      {eveningTimeModal && (() => {
+        const evParts = h24ToTimeParts(settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
+        return (
+          <TimePicker
+            visible={true}
+            hour12={evParts.hour12}
+            minute={evParts.minute}
+            ampm={evParts.ampm}
+            onClose={() => setEveningTimeModal(false)}
+            onSave={t => {
+              const h24 = t.ampm === 'PM' ? (t.hour12 % 12) + 12 : t.hour12 % 12;
+              updateSettings({ eveningReminderHour: h24, eveningReminderMinute: t.minute });
+              setEveningTimeModal(false);
+            }}
+            theme={theme}
+          />
+        );
+      })()}
     </SafeAreaView>
   );
 }
@@ -553,15 +799,6 @@ const styles = StyleSheet.create({
     gap: 6, margin: 12, padding: 10, borderRadius: 10, borderWidth: 1.5, borderStyle: 'dashed',
   },
   addReminderText: { fontSize: 14, fontWeight: '600' },
-  soundTestBlock: { borderTopWidth: 1, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14 },
-  soundTestLabel: { fontSize: 15, fontWeight: '500', marginBottom: 2 },
-  soundTestSub: { fontSize: 12, marginBottom: 10 },
-  soundTestGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  soundTestBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7,
-  },
-  soundTestBtnText: { fontSize: 13, fontWeight: '500' },
   devDayControls: { flexDirection: 'row', gap: 6 },
   devBtn: {
     width: 36, height: 36, borderRadius: 8, borderWidth: 1.5,

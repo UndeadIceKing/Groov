@@ -9,6 +9,7 @@ import {
   syncChallenge, deleteChallengeSync, syncPastChallenge,
   syncSettings,
 } from '../services/sync';
+import { scheduleEveningHabitReminder, cancelEveningHabitReminder } from '../utils/notifications';
 
 const AppContext = createContext(null);
 
@@ -30,6 +31,9 @@ const DEFAULT_SETTINGS = {
   soundEnabled: true,
   hapticsEnabled: true,
   theme: 'light',
+  eveningReminderEnabled: false,
+  eveningReminderHour: 20,
+  eveningReminderMinute: 0,
 };
 
 const STARTER_CHALLENGE = {
@@ -108,6 +112,9 @@ function migrateSettings(s) {
     soundEnabled: s.soundEnabled ?? true,
     hapticsEnabled: s.hapticsEnabled ?? true,
     theme: s.theme ?? 'light',
+    eveningReminderEnabled: s.eveningReminderEnabled ?? false,
+    eveningReminderHour: s.eveningReminderHour ?? 20,
+    eveningReminderMinute: s.eveningReminderMinute ?? 0,
     reminders: [
       { id: 'morning', label: 'Morning Reminder', time: migrateTime(s.morningTime, { hour12: 8, minute: 0, ampm: 'AM' }), enabled: true },
       { id: 'evening', label: 'Evening Reminder', time: migrateTime(s.eveningTime, { hour12: 8, minute: 0, ampm: 'PM' }), enabled: true },
@@ -140,10 +147,10 @@ export function AppProvider({ children }) {
   const [pendingHabitLinkChallenge, setPendingHabitLinkChallenge] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [accountCreatedAt, setAccountCreatedAt] = useState(null);
+  const [pendingChallengeRewards, setPendingChallengeRewards] = useState([]);
 
   const { user, displayName } = useAuth();
   const userId = user?.id ?? null;
-  const isDevEmail = ['beastlyiceking@gmail.com'].includes((user?.email ?? '').toLowerCase());
   // Holds latest state snapshot for first-login cloud migration without re-triggering sync effect
   const stateRef = useRef({});
 
@@ -174,8 +181,10 @@ export function AppProvider({ children }) {
   useEffect(() => { loadPersistedData(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadPersistedData() {
-    const [lastUserId, h, c, s, ch, ob, ds, pc, aca, savedOffset] = await Promise.all([
-      loadData('lastUserId'),
+    // NOTE: userId is always null here (auth resolves asynchronously after mount).
+    // Do NOT check lastUserId vs userId here — it will always look like a different user.
+    // The user-switch check runs in the cloud sync effect below, where userId is known.
+    const [h, c, s, ch, ob, ds, pc, aca, savedOffset, pcr] = await Promise.all([
       loadData('habits'),
       loadData('completions'),
       loadData('settings'),
@@ -185,18 +194,8 @@ export function AppProvider({ children }) {
       loadData('pastChallenges'),
       loadData('accountCreatedAt'),
       loadData('dateOffset'),
+      loadData('pendingChallengeRewards'),
     ]);
-
-    // If AsyncStorage belongs to a different user (e.g. after switching accounts),
-    // discard all stale data so the new user starts clean.
-    if (lastUserId !== null && lastUserId !== userId) {
-      await storeClearAll();
-      saveData('lastUserId', userId);
-      setLoaded(true);
-      return;
-    }
-
-    saveData('lastUserId', userId);
 
     if (h) setHabits(h);
     if (c) setCompletions(c);
@@ -220,6 +219,7 @@ export function AppProvider({ children }) {
       saveData('accountCreatedAt', firstDate);
     }
     if (savedOffset !== null) setDateOffset(savedOffset);
+    if (pcr) setPendingChallengeRewards(pcr);
     setLoaded(true);
   }
 
@@ -233,6 +233,7 @@ export function AppProvider({ children }) {
   useEffect(() => { if (loaded) saveData('dailySnapshot', dailySnapshot); }, [dailySnapshot, loaded]);
   useEffect(() => { if (loaded) saveData('pastChallenges', pastChallenges); }, [pastChallenges, loaded]);
   useEffect(() => { if (loaded && accountCreatedAt) saveData('accountCreatedAt', accountCreatedAt); }, [accountCreatedAt, loaded]);
+  useEffect(() => { if (loaded) saveData('pendingChallengeRewards', pendingChallengeRewards); }, [pendingChallengeRewards, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -249,14 +250,40 @@ export function AppProvider({ children }) {
     stateRef.current = { habits, completions, settings, challenges, pastChallenges, dailySnapshot };
   }, [habits, completions, settings, challenges, pastChallenges, dailySnapshot]);
 
+  // ── Evening reminder scheduling ──────────────────────────────────────────────
+  // Reschedule (or cancel) the evening habit reminder whenever completions or
+  // relevant settings change. Uses real today — not the dev date offset — so the
+  // notification fires at the right wall-clock time.
+  useEffect(() => {
+    if (!loaded) return;
+    const realToday = new Date().toISOString().split('T')[0];
+    if (!settings.eveningReminderEnabled || !settings.notificationsEnabled) {
+      cancelEveningHabitReminder(realToday);
+      return;
+    }
+    const todayCompletions = completions[realToday] || {};
+    const allDone = habits.length > 0 && habits.every(h => (todayCompletions[h.id] || 0) >= h.volumeGoal);
+    if (allDone) {
+      cancelEveningHabitReminder(realToday);
+    } else {
+      scheduleEveningHabitReminder(realToday, settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
+    }
+  }, [completions, habits, settings.eveningReminderEnabled, settings.notificationsEnabled, settings.eveningReminderHour, settings.eveningReminderMinute, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Cloud sync ───────────────────────────────────────────────────────────────
   // Runs once when the user logs in (userId changes from null → id) and after local data loads.
-  // If cloud has data: pull it down (covers multi-device login).
-  // If cloud is empty: push local data up (first-time account creation).
+  // This is also where we detect account switches: userId is known here (unlike loadPersistedData).
   useEffect(() => {
     if (!loaded || !userId) return;
     const sync = async () => {
       try {
+        // Detect account switch: if local data belongs to a different user, wipe it first.
+        const lastUserId = await loadData('lastUserId');
+        if (lastUserId !== null && lastUserId !== userId) {
+          await storeClearAll();
+        }
+        await saveData('lastUserId', userId);
+
         const cloudData = await pullAllData(userId);
         const hasCloudData = cloudData.habits !== null && cloudData.habits.length > 0;
         if (hasCloudData) {
@@ -271,7 +298,7 @@ export function AppProvider({ children }) {
           await pushAllLocalData(userId, stateRef.current);
         }
       } catch (e) {
-        console.warn('Cloud sync error:', e.message);
+        if (__DEV__) console.warn('Cloud sync error:', e.message);
       }
     };
     sync();
@@ -415,18 +442,19 @@ export function AppProvider({ children }) {
     }
   }, [challenges, userId]);
 
-  const createChallenge = useCallback((name, description, days, icon = '🏆') => {
-    if (challenges.length >= 3) return;
+  const createChallenge = useCallback((name, description, days, icon = '🏆', linkedHabitIds = []) => {
+    if (challenges.length >= 3) return null;
     const newCh = {
       id: Date.now().toString(),
       name, description, days, icon,
       completedDays: [],
       completed: false,
       startDate: todayStr(),
-      linkedHabitIds: [],
+      linkedHabitIds,
     };
     setChallenges(prev => [...prev, newCh]);
     if (userId) syncChallenge(userId, newCh);
+    return newCh.id;
   }, [challenges, todayStr, userId]);
 
   const deleteChallenge = useCallback((challengeId) => {
@@ -479,6 +507,10 @@ export function AppProvider({ children }) {
     if (!ch) return;
     const tier = getChallengeTier(ch.completedDays.length, ch.days);
     const archived = { ...ch, archivedAt: todayStr(), tier, completed: tier !== 'none' };
+    setPendingChallengeRewards(prev => {
+      if (prev.some(r => r.id === ch.id)) return prev;
+      return [...prev, archived];
+    });
     setPastChallenges(prev => {
       if (prev.some(pc => pc.id === ch.id)) return prev;
       return [archived, ...prev];
@@ -489,6 +521,10 @@ export function AppProvider({ children }) {
       syncPastChallenge(userId, archived);
     }
   }, [challenges, todayStr, userId]);
+
+  const clearPendingChallengeRewards = useCallback(() => {
+    setPendingChallengeRewards([]);
+  }, []);
 
   const linkHabitToChallenge = useCallback((challengeId, habitId) => {
     const updated = challenges.map(ch => {
@@ -540,13 +576,64 @@ export function AppProvider({ children }) {
     setHabits(DEFAULT_HABITS);
     setCompletions({});
     setSettings(DEFAULT_SETTINGS);
-    setChallenges([STARTER_CHALLENGE]);
+    // STARTER_CHALLENGE is a module-level constant evaluated at import time.
+    // After a reset we need a fresh copy with the real current date, not the stale one.
+    setChallenges([{ ...STARTER_CHALLENGE, startDate: today, completedDays: [], completed: false }]);
     setPastChallenges([]);
     setDailySnapshot({});
     setHasOnboarded(false);
     setDateOffset(0);
     setAccountCreatedAt(today);
   }, [userId]);
+
+  // Flush all current state to Supabase — call before sign-out to avoid data loss
+  const pushAllData = useCallback(async () => {
+    if (!userId) return;
+    await pushAllLocalData(userId, stateRef.current);
+  }, [userId]);
+
+  // Dev tool: fill the last 30 days with random completion data
+  const seedRandomHistory = useCallback(async () => {
+    const habitSnapshot = habits.map(h => ({ id: h.id, name: h.name, icon: h.icon, volumeGoal: h.volumeGoal }));
+    const newCompletions = { ...completions };
+    const newSnapshot = { ...dailySnapshot };
+
+    for (let i = 1; i <= 30; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const dayMap = {};
+      habits.forEach(h => {
+        // Each habit independently gets a 55–95% daily completion rate
+        const rate = 0.55 + Math.random() * 0.4;
+        dayMap[h.id] = Math.random() < rate ? h.volumeGoal : 0;
+      });
+      newCompletions[dateStr] = dayMap;
+      newSnapshot[dateStr] = habitSnapshot;
+    }
+
+    // Ensure accountCreatedAt is at least 31 days back so history is visible
+    const floorDate = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 31);
+      return d.toISOString().split('T')[0];
+    })();
+    const newAca = !accountCreatedAt || accountCreatedAt > floorDate ? floorDate : accountCreatedAt;
+
+    setCompletions(newCompletions);
+    setDailySnapshot(newSnapshot);
+    // Save immediately to AsyncStorage so data persists even if the app is killed before
+    // React's state-change effects fire, or if a subsequent Supabase pull would overwrite them.
+    await saveData('completions', newCompletions);
+    await saveData('dailySnapshot', newSnapshot);
+    if (newAca !== accountCreatedAt) {
+      setAccountCreatedAt(newAca);
+      saveData('accountCreatedAt', newAca);
+    }
+    if (userId) {
+      await pushAllLocalData(userId, { ...stateRef.current, completions: newCompletions, dailySnapshot: newSnapshot });
+    }
+  }, [habits, completions, dailySnapshot, accountCreatedAt, userId]);
 
   // ── Streak / progress helpers ────────────────────────────────────────────────
 
@@ -617,7 +704,9 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={{
       habits, completions, settings, challenges, pastChallenges, hasOnboarded, theme,
       effectiveChallenges, effectivePastChallenges,
-      dateOffset, setDateOffset, accountCreatedAt, displayName, isDevEmail,
+      dateOffset, setDateOffset, accountCreatedAt, displayName,
+      loaded,
+      pendingChallengeRewards, clearPendingChallengeRewards,
       modalOpen, setModalOpen,
       requestedTab, setRequestedTab,
       pendingHabitLinkChallenge, setPendingHabitLinkChallenge,
@@ -630,7 +719,7 @@ export function AppProvider({ children }) {
       archiveExpiredChallenge, completeChallengeImmediately,
       selectAllHabitsToday, resetAllHabitsToday,
       linkHabitToChallenge, unlinkHabitFromChallenge, linkAllHabitsToChallenge,
-      completeOnboarding, resetAll,
+      completeOnboarding, resetAll, pushAllData, seedRandomHistory,
       getStreakForHabit, getOverallStreak, getLast30Days, getLastNDays,
       todayStr,
     }}>

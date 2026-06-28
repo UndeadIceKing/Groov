@@ -1,5 +1,8 @@
 import { supabase } from '../utils/supabase';
 
+// Only emit sync diagnostics in development builds
+const syncWarn = __DEV__ ? (msg, detail) => console.warn(msg, detail) : () => {};
+
 // ── Transformers ──────────────────────────────────────────────────────────────
 
 const habitToRow = (habit, userId) => ({
@@ -122,8 +125,8 @@ export async function pushAllLocalData(userId, { habits, completions, settings, 
 
   const results = await Promise.allSettled(ops);
   results.forEach((r, i) => {
-    if (r.status === 'rejected') console.warn(`pushAllLocalData[${i}] rejected:`, r.reason);
-    else if (r.value?.error) console.warn(`pushAllLocalData[${i}] error:`, r.value.error.message);
+    if (r.status === 'rejected') syncWarn(`pushAllLocalData[${i}] rejected:`, r.reason);
+    else if (r.value?.error) syncWarn(`pushAllLocalData[${i}] error:`, r.value.error.message);
   });
 }
 
@@ -169,7 +172,7 @@ export async function syncProfile(userId, displayName) {
     display_name: displayName,
     updated_at: new Date().toISOString(),
   });
-  if (error) console.warn('syncProfile:', error.message);
+  if (error) syncWarn('syncProfile:', error.message);
 }
 
 export async function fetchProfile(userId) {
@@ -177,7 +180,7 @@ export async function fetchProfile(userId) {
     .select('display_name')
     .eq('user_id', userId)
     .maybeSingle();
-  if (error) console.warn('fetchProfile:', error.message);
+  if (error) syncWarn('fetchProfile:', error.message);
   return data;
 }
 
@@ -185,23 +188,23 @@ export async function fetchProfile(userId) {
 
 export async function syncHabit(userId, habit) {
   const { error } = await supabase.from('habits').upsert(habitToRow(habit, userId));
-  if (error) console.warn('syncHabit:', error.message);
+  if (error) syncWarn('syncHabit:', error.message);
 }
 
 export async function deleteHabitSync(userId, habitId) {
   const { error } = await supabase.from('habits').delete().eq('id', habitId).eq('user_id', userId);
-  if (error) console.warn('deleteHabitSync:', error.message);
+  if (error) syncWarn('deleteHabitSync:', error.message);
 }
 
 export async function syncCompletion(userId, date, habitId, count) {
   if (count <= 0) {
     const { error } = await supabase.from('completions').delete()
       .eq('user_id', userId).eq('date', date).eq('habit_id', habitId);
-    if (error) console.warn('syncCompletion delete:', error.message);
+    if (error) syncWarn('syncCompletion delete:', error.message);
   } else {
     const { error } = await supabase.from('completions')
       .upsert({ user_id: userId, date, habit_id: habitId, count });
-    if (error) console.warn('syncCompletion upsert:', error.message);
+    if (error) syncWarn('syncCompletion upsert:', error.message);
   }
 }
 
@@ -212,32 +215,32 @@ export async function syncCompletionsForDate(userId, date, habitMap) {
     .map(([habitId, count]) => ({ user_id: userId, date, habit_id: habitId, count }));
   if (rows.length > 0) {
     const { error } = await supabase.from('completions').insert(rows);
-    if (error) console.warn('syncCompletionsForDate:', error.message);
+    if (error) syncWarn('syncCompletionsForDate:', error.message);
   }
 }
 
 export async function syncChallenge(userId, challenge) {
   const { error } = await supabase.from('challenges').upsert(challengeToRow(challenge, userId));
-  if (error) console.warn('syncChallenge:', error.message);
+  if (error) syncWarn('syncChallenge:', error.message);
 }
 
 export async function deleteChallengeSync(userId, challengeId) {
   const { error } = await supabase.from('challenges').delete().eq('id', challengeId).eq('user_id', userId);
-  if (error) console.warn('deleteChallengeSync:', error.message);
+  if (error) syncWarn('deleteChallengeSync:', error.message);
 }
 
 export async function syncPastChallenge(userId, challenge) {
   const { error } = await supabase.from('past_challenges').upsert(pastChallengeToRow(challenge, userId));
-  if (error) console.warn('syncPastChallenge:', error.message);
+  if (error) syncWarn('syncPastChallenge:', error.message);
 }
 
 export async function syncSettings(userId, settings) {
   const { error } = await supabase.from('settings').upsert(settingsToRow(settings, userId));
-  if (error) console.warn('syncSettings:', error.message);
+  if (error) syncWarn('syncSettings:', error.message);
 }
 
 export async function syncDailySnapshot(userId, date, snapshot) {
   const { error } = await supabase.from('daily_snapshots')
     .upsert({ user_id: userId, date, snapshot });
-  if (error) console.warn('syncDailySnapshot:', error.message);
+  if (error) syncWarn('syncDailySnapshot:', error.message);
 }

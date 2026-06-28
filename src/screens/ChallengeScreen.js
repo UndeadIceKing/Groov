@@ -10,7 +10,6 @@ import BottomSheet from '../components/BottomSheet';
 import EmptyCard from '../components/EmptyCard';
 import { SheetDragHandle, SheetHeader } from '../components/SheetHeader';
 import CelebrationOverlay from '../components/CelebrationOverlay';
-import TrophyCelebration from '../components/TrophyCelebration';
 import { lightImpact, mediumImpact } from '../utils/haptics';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -21,7 +20,6 @@ const RANGE_OPTIONS = [
   { label: 'Year', max: 365 },
 ];
 
-// Days since startDate (returns 0 if today == startDate)
 function daysSince(startDate, today) {
   if (!startDate) return 0;
   const s = new Date(startDate + 'T00:00:00');
@@ -29,12 +27,10 @@ function daysSince(startDate, today) {
   return Math.max(0, Math.floor((t - s) / 86400000));
 }
 
-// Current 1-based day in challenge (capped at challenge.days)
 function currentChallengeDay(challenge, today) {
   return Math.min(challenge.days, daysSince(challenge.startDate, today) + 1);
 }
 
-// Is the challenge period fully elapsed?
 function isChallengeExpired(challenge, today) {
   return daysSince(challenge.startDate, today) >= challenge.days;
 }
@@ -95,95 +91,18 @@ function DayBadge({ dayNum, completed, isCurrent, isMissed, theme }) {
   );
 }
 
-// ── Habit link picker modal ───────────────────────────────────────────────────
-// Receives challengeId + live habits/challenges from context so it always reflects
-// the latest linked state without needing to close and reopen.
-
-function HabitLinkModal({ visible, challengeId, challenges, habits, onClose, onLink, onUnlink, onLinkAll, onAddHabit, theme }) {
-  const sheet = useSheetAnim();
-
-  useEffect(() => { if (visible) sheet.open(); }, [visible]);
-
-  const doClose = () => sheet.close(onClose);
-  const pan = useRef(makeDragPanResponder(sheet.translateY, doClose)).current;
-
-  // Always derive from live challenges so toggling updates instantly
-  const challenge = challenges.find(c => c.id === challengeId);
-  const linked = challenge?.linkedHabitIds || [];
-
-  if (!challengeId) return null;
-
-  return (
-    <BottomSheet visible={sheet.internalVisible} onClose={doClose} translateY={sheet.translateY} backgroundColor={theme.surface}>
-      <SheetHeader title="Link Habits" onClose={doClose} panHandlers={pan.panHandlers} theme={theme} />
-
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
-            <Text style={[styles.linkHint, { color: theme.textMuted }]}>
-              Tap to toggle which habits count toward this challenge.
-            </Text>
-
-            <TouchableOpacity
-              style={[styles.linkAllBtn, { borderColor: theme.primary, backgroundColor: theme.primaryLight }]}
-              onPress={onLinkAll}
-            >
-              <Text style={[styles.linkAllBtnText, { color: theme.primary }]}>⚡ Link All Habits</Text>
-            </TouchableOpacity>
-
-            {habits.length === 0 ? (
-              <Text style={[styles.noHabitsText, { color: theme.textMuted }]}>No habits yet. Add one below.</Text>
-            ) : (
-              habits.map(habit => {
-                const isLinked = linked.includes(habit.id);
-                return (
-                  <TouchableOpacity
-                    key={habit.id}
-                    style={[
-                      styles.habitLinkRow,
-                      {
-                        backgroundColor: isLinked ? theme.primaryLight : theme.bg,
-                        borderColor: isLinked ? theme.primary : theme.border,
-                      },
-                    ]}
-                    onPress={() => isLinked ? onUnlink(habit.id) : onLink(habit.id)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.habitLinkIcon}>{habit.icon || '⭐'}</Text>
-                    <Text style={[styles.habitLinkName, { color: theme.text }]} numberOfLines={1}>
-                      {habit.name}
-                    </Text>
-                    <View style={[
-                      styles.habitLinkCheck,
-                      { backgroundColor: isLinked ? theme.primary : 'transparent', borderColor: isLinked ? theme.primary : theme.border },
-                    ]}>
-                      {isLinked && <Text style={styles.habitLinkCheckMark}>✓</Text>}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
-            )}
-
-            {/* Add new habit and link it to this challenge */}
-            <TouchableOpacity
-              style={[styles.addHabitInModalBtn, { borderColor: theme.border }]}
-              onPress={() => { doClose(); onAddHabit(); }}
-            >
-              <Text style={[styles.addHabitInModalText, { color: theme.primary }]}>+ Add New Habit & Link</Text>
-            </TouchableOpacity>
-          </ScrollView>
-    </BottomSheet>
-  );
-}
-
 const CHALLENGE_ICONS = ['🏆', '🎯', '💪', '🔥', '⚡', '🌟', '🏃', '🧠', '🎨', '📚', '💎', '🌱', '🥊', '🚀', '🎵', '🌊'];
 
-// ── Challenge form modal ──────────────────────────────────────────────────────
+// ── Challenge form modal (includes inline habit linking) ──────────────────────
 
-function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
+function ChallengeFormModal({ visible, initial, habits, onClose, onSave, onAddHabit, theme }) {
+  const { settings } = useApp();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [days, setDays] = useState(7);
   const [rangeMax, setRangeMax] = useState(7);
   const [icon, setIcon] = useState('🏆');
+  const [selectedHabitIds, setSelectedHabitIds] = useState([]);
   const sheet = useSheetAnim();
 
   useEffect(() => {
@@ -194,6 +113,7 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
       const d = initial?.days ?? 7;
       setDays(d);
       setRangeMax(d <= 7 ? 7 : d <= 30 ? 30 : 365);
+      setSelectedHabitIds(initial?.linkedHabitIds || []);
       sheet.open();
     } else {
       sheet.close(null);
@@ -203,16 +123,25 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
   const doClose = () => sheet.close(onClose);
   const pan = useRef(makeDragPanResponder(sheet.translateY, doClose)).current;
 
+  // Can only save if name is filled AND (no habits exist yet OR at least one is linked)
+  const canSave = name.trim().length > 0 && (habits.length === 0 || selectedHabitIds.length > 0);
+
   const handleSave = () => {
-    if (!name.trim()) return;
-    mediumImpact();
-    onSave({ name: name.trim(), description: description.trim(), days, icon });
+    if (!canSave) return;
+    if (settings.hapticsEnabled) mediumImpact();
+    onSave({ name: name.trim(), description: description.trim(), days, icon, linkedHabitIds: selectedHabitIds });
     sheet.close(onClose);
   };
 
   const handleRangeChange = (max) => {
     setRangeMax(max);
     if (days > max) setDays(max);
+  };
+
+  const toggleHabit = (habitId) => {
+    setSelectedHabitIds(prev =>
+      prev.includes(habitId) ? prev.filter(id => id !== habitId) : [...prev, habitId]
+    );
   };
 
   return (
@@ -224,88 +153,147 @@ function ChallengeFormModal({ visible, initial, onClose, onSave, theme }) {
         theme={theme}
       />
 
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 20 }}
-          >
-            <Text style={[styles.label, { color: theme.textMuted }]}>Icon</Text>
-            <View style={styles.iconPickerRow}>
-              {CHALLENGE_ICONS.map(ic => (
-                <TouchableOpacity
-                  key={ic}
-                  style={[
-                    styles.iconPickerBtn,
-                    { backgroundColor: theme.bg, borderColor: icon === ic ? theme.primary : theme.border },
-                    icon === ic && { backgroundColor: theme.primaryLight },
-                  ]}
-                  onPress={() => setIcon(ic)}
-                >
-                  <Text style={styles.iconPickerEmoji}>{ic}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={[styles.label, { color: theme.textMuted }]}>Name</Text>
-            <TextInput
-              style={[styles.input, { borderColor: theme.border, color: theme.text, backgroundColor: theme.bg }]}
-              value={name}
-              onChangeText={setName}
-              placeholder="e.g. 7-Day Strong"
-              placeholderTextColor={theme.textMuted}
-              returnKeyType="done"
-              onSubmitEditing={Keyboard.dismiss}
-            />
-
-            <Text style={[styles.label, { color: theme.textMuted }]}>Description</Text>
-            <TextInput
-              style={[styles.input, styles.inputMulti, { borderColor: theme.border, color: theme.text, backgroundColor: theme.bg }]}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="What's the goal?"
-              placeholderTextColor={theme.textMuted}
-              multiline
-              numberOfLines={3}
-            />
-
-            <Text style={[styles.label, { color: theme.textMuted }]}>
-              Duration — {days} day{days !== 1 ? 's' : ''}
-            </Text>
-
-            <View style={styles.rangeRow}>
-              {RANGE_OPTIONS.map(opt => (
-                <TouchableOpacity
-                  key={opt.label}
-                  style={[
-                    styles.rangeBtn,
-                    { borderColor: rangeMax === opt.max ? theme.primary : theme.border },
-                    rangeMax === opt.max && { backgroundColor: theme.primaryLight },
-                  ]}
-                  onPress={() => handleRangeChange(opt.max)}
-                >
-                  <Text style={[styles.rangeBtnText, { color: rangeMax === opt.max ? theme.primary : theme.textMuted }]}>
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Slider value={days} min={1} max={rangeMax} onValueChange={setDays} theme={theme} />
-
-            <View style={styles.sliderLabels}>
-              <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>1</Text>
-              <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>{rangeMax}</Text>
-            </View>
-
-            {/* Save button at bottom of scroll */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: 20 }}
+      >
+        <Text style={[styles.label, { color: theme.textMuted }]}>Icon</Text>
+        <View style={styles.iconPickerRow}>
+          {CHALLENGE_ICONS.map(ic => (
             <TouchableOpacity
-              style={[styles.saveBtn, { backgroundColor: name.trim() ? theme.primary : theme.border, marginTop: 8 }]}
-              onPress={handleSave}
-              disabled={!name.trim()}
+              key={ic}
+              style={[
+                styles.iconPickerBtn,
+                { backgroundColor: theme.bg, borderColor: icon === ic ? theme.primary : theme.border },
+                icon === ic && { backgroundColor: theme.primaryLight },
+              ]}
+              onPress={() => setIcon(ic)}
             >
-              <Text style={styles.saveBtnText}>{initial ? 'Save Changes' : 'Create Challenge'}</Text>
+              <Text style={styles.iconPickerEmoji}>{ic}</Text>
             </TouchableOpacity>
-          </ScrollView>
+          ))}
+        </View>
+
+        <Text style={[styles.label, { color: theme.textMuted }]}>Name</Text>
+        <TextInput
+          style={[styles.input, { borderColor: theme.border, color: theme.text, backgroundColor: theme.bg }]}
+          value={name}
+          onChangeText={setName}
+          placeholder="e.g. 7-Day Strong"
+          placeholderTextColor={theme.textMuted}
+          returnKeyType="done"
+          onSubmitEditing={Keyboard.dismiss}
+        />
+
+        <Text style={[styles.label, { color: theme.textMuted }]}>Description</Text>
+        <TextInput
+          style={[styles.input, styles.inputMulti, { borderColor: theme.border, color: theme.text, backgroundColor: theme.bg }]}
+          value={description}
+          onChangeText={setDescription}
+          placeholder="What's the goal?"
+          placeholderTextColor={theme.textMuted}
+          multiline
+          numberOfLines={3}
+        />
+
+        <Text style={[styles.label, { color: theme.textMuted }]}>
+          Duration: {days} day{days !== 1 ? 's' : ''}
+        </Text>
+
+        <View style={styles.rangeRow}>
+          {RANGE_OPTIONS.map(opt => (
+            <TouchableOpacity
+              key={opt.label}
+              style={[
+                styles.rangeBtn,
+                { borderColor: rangeMax === opt.max ? theme.primary : theme.border },
+                rangeMax === opt.max && { backgroundColor: theme.primaryLight },
+              ]}
+              onPress={() => handleRangeChange(opt.max)}
+            >
+              <Text style={[styles.rangeBtnText, { color: rangeMax === opt.max ? theme.primary : theme.textMuted }]}>
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Slider value={days} min={1} max={rangeMax} onValueChange={setDays} theme={theme} />
+
+        <View style={styles.sliderLabels}>
+          <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>1</Text>
+          <Text style={[styles.sliderLabelText, { color: theme.textMuted }]}>{rangeMax}</Text>
+        </View>
+
+        {/* ── Linked habits ── */}
+        <Text style={[styles.label, { color: theme.textMuted }]}>Linked Habits</Text>
+
+        {habits.length === 0 ? (
+          <Text style={[styles.noHabitsInForm, { color: theme.textMuted }]}>
+            No habits yet. Go to the Habits tab to create some.
+          </Text>
+        ) : (
+          <>
+            <TouchableOpacity
+              style={[styles.linkAllBtn, { borderColor: theme.primary, backgroundColor: theme.primaryLight }]}
+              onPress={() => setSelectedHabitIds(habits.map(h => h.id))}
+            >
+              <Text style={[styles.linkAllBtnText, { color: theme.primary }]}>⚡ Link All Habits</Text>
+            </TouchableOpacity>
+
+            {habits.map(habit => {
+              const isLinked = selectedHabitIds.includes(habit.id);
+              return (
+                <TouchableOpacity
+                  key={habit.id}
+                  style={[
+                    styles.habitLinkRow,
+                    {
+                      backgroundColor: isLinked ? theme.primaryLight : theme.bg,
+                      borderColor: isLinked ? theme.primary : theme.border,
+                    },
+                  ]}
+                  onPress={() => toggleHabit(habit.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.habitLinkIcon}>{habit.icon || '⭐'}</Text>
+                  <Text style={[styles.habitLinkName, { color: theme.text }]} numberOfLines={1}>
+                    {habit.name}
+                  </Text>
+                  <View style={[
+                    styles.habitLinkCheck,
+                    { backgroundColor: isLinked ? theme.primary : 'transparent', borderColor: isLinked ? theme.primary : theme.border },
+                  ]}>
+                    {isLinked && <Text style={styles.habitLinkCheckMark}>✓</Text>}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+
+            {selectedHabitIds.length === 0 && (
+              <Text style={[styles.linkWarning, { color: '#D97706' }]}>
+                Select at least one habit to save this challenge.
+              </Text>
+            )}
+          </>
+        )}
+
+        <TouchableOpacity
+          style={[styles.addHabitInModalBtn, { borderColor: theme.border }]}
+          onPress={() => { doClose(); onAddHabit?.(); }}
+        >
+          <Text style={[styles.addHabitInModalText, { color: theme.primary }]}>+ Add New Habit</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.saveBtn, { backgroundColor: canSave ? theme.primary : theme.border, marginTop: 8 }]}
+          onPress={handleSave}
+          disabled={!canSave}
+        >
+          <Text style={styles.saveBtnText}>{initial ? 'Save Changes' : 'Create Challenge'}</Text>
+        </TouchableOpacity>
+      </ScrollView>
     </BottomSheet>
   );
 }
@@ -356,7 +344,7 @@ function PastChallengeDetailModal({ challenge, onClose, theme }) {
 
             <Text style={[styles.pastDesc, { color: subColor }]}>{challenge.description || 'No description'}</Text>
 
-            <Text style={[styles.label, { color: subColor }]}>Progress — {completedCount}/{challenge.days} days</Text>
+            <Text style={[styles.label, { color: subColor }]}>Progress: {completedCount}/{challenge.days} days</Text>
 
             <View style={[styles.progressBg, { backgroundColor: tier !== 'none' ? cardBorder + '40' : theme.progressBarBg }]}>
               <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: cardBorder || theme.primary }]} />
@@ -393,7 +381,8 @@ function PastChallengeDetailModal({ challenge, onClose, theme }) {
 
 // ── Challenge card ────────────────────────────────────────────────────────────
 
-function ChallengeCard({ challenge, habits, today, onEdit, onDelete, onLinkHabits, theme }) {
+function ChallengeCard({ challenge, habits, today, onEdit, onDelete, theme }) {
+  const [showLinked, setShowLinked] = useState(false);
   const completedCount = challenge.completedDays.length;
   const currentDay = currentChallengeDay(challenge, today);
   const progress = challenge.days > 0 ? completedCount / challenge.days : 0;
@@ -455,17 +444,23 @@ function ChallengeCard({ challenge, habits, today, onEdit, onDelete, onLinkHabit
         <Text style={[styles.desc, { color: theme.textMuted }]}>{challenge.description}</Text>
       ) : null}
 
-      {/* Linked habits section */}
+      {/* Linked habits — collapsible dropdown, no Manage button */}
       <View style={[styles.linkedSection, { borderTopColor: theme.border }]}>
-        <View style={styles.linkedHeader}>
+        <TouchableOpacity
+          style={styles.linkedTitleArea}
+          onPress={() => linkedHabits.length > 0 && setShowLinked(v => !v)}
+          activeOpacity={linkedHabits.length > 0 ? 0.7 : 1}
+        >
           <Text style={[styles.linkedTitle, { color: theme.textMuted }]}>
             {linked.length > 0 ? `Linked Habits (${linked.length})` : 'No habits linked'}
           </Text>
-          <TouchableOpacity onPress={onLinkHabits} style={[styles.linkBtn, { borderColor: theme.primary }]}>
-            <Text style={[styles.linkBtnText, { color: theme.primary }]}>⚙️ Manage</Text>
-          </TouchableOpacity>
-        </View>
-        {linkedHabits.length > 0 && (
+          {linkedHabits.length > 0 && (
+            <Text style={[styles.linkedChevron, { color: theme.textMuted }]}>
+              {showLinked ? ' ▲' : ' ▼'}
+            </Text>
+          )}
+        </TouchableOpacity>
+        {showLinked && linkedHabits.length > 0 && (
           <View style={styles.linkedPills}>
             {linkedHabits.map(h => (
               <View key={h.id} style={[styles.linkedPill, { backgroundColor: theme.primaryLight }]}>
@@ -483,7 +478,7 @@ function ChallengeCard({ challenge, habits, today, onEdit, onDelete, onLinkHabit
           <Text style={[styles.claimDoneText, { color: theme.success }]}>✅ Today's logged!</Text>
         ) : linked.length === 0 ? (
           <Text style={[styles.claimWaiting, { color: theme.textMuted }]}>
-            Link habits above to start tracking this challenge.
+            Tap Edit to link habits to this challenge.
           </Text>
         ) : (
           <Text style={[styles.claimWaiting, { color: theme.textMuted }]}>
@@ -499,12 +494,10 @@ function ChallengeCard({ challenge, habits, today, onEdit, onDelete, onLinkHabit
 
 export default function ChallengeScreen() {
   const {
-    habits, challenges, pastChallenges, effectiveChallenges, effectivePastChallenges,
-    theme, settings,
-    isChallengeHabitsDone,
+    habits, challenges, effectiveChallenges, effectivePastChallenges,
+    theme, settings, loaded,
     editChallenge, createChallenge, deleteChallenge,
     archiveExpiredChallenge,
-    linkHabitToChallenge, unlinkHabitFromChallenge, linkAllHabitsToChallenge,
     setRequestedTab, setPendingHabitLinkChallenge,
     setModalOpen,
     todayStr,
@@ -512,53 +505,58 @@ export default function ChallengeScreen() {
   const today = todayStr();
 
   const [celebrating, setCelebrating] = useState(false);
-  const [trophyCelebrating, setTrophyCelebrating] = useState(false);
   const [formVisible, setFormVisible] = useState(false);
   const [editingChallenge, setEditingChallenge] = useState(null);
   const [selectedPast, setSelectedPast] = useState(null);
-  // Store only the ID so HabitLinkModal always reads from live challenges array
-  const [linkingChallengeId, setLinkingChallengeId] = useState(null);
 
-  // Archive expired challenges on mount and whenever challenges/today changes
+  // Archive expired challenges once data has loaded.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
+    if (!loaded) return;
     challenges.forEach(ch => {
       if (isChallengeExpired(ch, today)) {
-        const tier = getChallengeTier(ch.completedDays.length, ch.days);
-        if (tier !== 'none') {
-          // Show trophy celebration for good completion
-          setTrophyCelebrating(true);
-        }
         archiveExpiredChallenge(ch.id);
       }
     });
-  }, [today]);
+  }, [today, loaded]);
 
-  // Track modal open state for swipe lock
-  const anyModalOpen = formVisible || !!linkingChallengeId || !!selectedPast;
+  const anyModalOpen = formVisible || !!selectedPast;
   useEffect(() => { setModalOpen(anyModalOpen); }, [anyModalOpen]);
 
   const handleDelete = (challenge) => {
-    lightImpact();
+    if (settings.hapticsEnabled) lightImpact();
     Alert.alert('Delete Challenge', `Remove "${challenge.name}"? It will be moved to Past Challenges.`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => deleteChallenge(challenge.id) },
     ]);
   };
 
-  const openNew = () => { lightImpact(); setEditingChallenge(null); setFormVisible(true); };
-  const openEdit = (challenge) => { setEditingChallenge(challenge); setFormVisible(true); };
+  const openNew = () => {
+    if (settings.hapticsEnabled) lightImpact();
+    setEditingChallenge(null);
+    setFormVisible(true);
+  };
 
-  const handleSaveForm = ({ name, description, days, icon }) => {
+  const openEdit = (challenge) => {
+    setEditingChallenge(challenge);
+    setFormVisible(true);
+  };
+
+  const handleSaveForm = ({ name, description, days, icon, linkedHabitIds }) => {
     if (editingChallenge) {
-      editChallenge(editingChallenge.id, { name, description, days, icon });
+      editChallenge(editingChallenge.id, { name, description, days, icon, linkedHabitIds });
     } else {
-      createChallenge(name, description, days, icon);
+      createChallenge(name, description, days, icon, linkedHabitIds);
     }
   };
 
-  const handleAddHabitForChallenge = (challengeId) => {
-    setPendingHabitLinkChallenge(challengeId);
-    setRequestedTab(3); // Navigate to Habits tab
+  // Navigate to Habits tab to add a new habit.
+  // For edit mode, set pending link so the new habit auto-links to this challenge.
+  const handleAddHabit = () => {
+    if (editingChallenge) {
+      setPendingHabitLinkChallenge(editingChallenge.id);
+    }
+    setRequestedTab(3);
   };
 
   const canAddMore = effectiveChallenges.length < 3;
@@ -596,13 +594,13 @@ export default function ChallengeScreen() {
               today={today}
               onEdit={() => openEdit(challenge)}
               onDelete={() => handleDelete(challenge)}
-              onLinkHabits={() => setLinkingChallengeId(challenge.id)}
               theme={theme}
             />
           ))
         )}
 
-        {effectiveChallenges.length > 0 && effectiveChallenges.length < 3 && (
+        {/* Tip: only shown before the user has any past challenges */}
+        {effectiveChallenges.length > 0 && effectiveChallenges.length < 3 && effectivePastChallenges.length === 0 && (
           <View style={[styles.card, { backgroundColor: theme.primaryLight, borderColor: theme.primary }]}>
             <Text style={[styles.tipTitle, { color: theme.primary }]}>💡 Tip</Text>
             <Text style={[styles.tipBody, { color: theme.text }]}>
@@ -611,7 +609,7 @@ export default function ChallengeScreen() {
           </View>
         )}
 
-        {/* Past Challenges — always visible */}
+        {/* Past Challenges */}
         <View style={{ marginTop: 8 }}>
           <Text style={[styles.sectionLabel, { color: theme.textMuted }]}>PAST CHALLENGES</Text>
           {effectivePastChallenges.length === 0 ? (
@@ -653,31 +651,13 @@ export default function ChallengeScreen() {
 
       <CelebrationOverlay visible={celebrating} onDone={() => setCelebrating(false)} />
 
-      <TrophyCelebration
-        visible={trophyCelebrating}
-        onDone={() => setTrophyCelebrating(false)}
-        settings={settings}
-        theme={theme}
-      />
-
       <ChallengeFormModal
         visible={formVisible}
         initial={editingChallenge}
+        habits={habits}
         onClose={() => setFormVisible(false)}
         onSave={handleSaveForm}
-        theme={theme}
-      />
-
-      <HabitLinkModal
-        visible={!!linkingChallengeId}
-        challengeId={linkingChallengeId}
-        challenges={effectiveChallenges}
-        habits={habits}
-        onClose={() => setLinkingChallengeId(null)}
-        onLink={(habitId) => linkHabitToChallenge(linkingChallengeId, habitId)}
-        onUnlink={(habitId) => unlinkHabitFromChallenge(linkingChallengeId, habitId)}
-        onLinkAll={() => linkAllHabitsToChallenge(linkingChallengeId)}
-        onAddHabit={() => handleAddHabitForChallenge(linkingChallengeId)}
+        onAddHabit={handleAddHabit}
         theme={theme}
       />
 
@@ -716,12 +696,10 @@ const styles = StyleSheet.create({
   progressLabel: { fontSize: 12, marginBottom: 8 },
   desc: { fontSize: 13, lineHeight: 18, marginBottom: 8 },
   linkedSection: { borderTopWidth: 1, paddingTop: 12, marginTop: 4 },
-  linkedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  linkedTitleArea: { flexDirection: 'row', alignItems: 'center' },
   linkedTitle: { fontSize: 12, fontWeight: '600' },
-  linkedActions: { flexDirection: 'row', gap: 8 },
-  linkBtn: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  linkBtnText: { fontSize: 12, fontWeight: '600' },
-  linkedPills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  linkedChevron: { fontSize: 10, fontWeight: '700' },
+  linkedPills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   linkedPill: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, gap: 4, maxWidth: 140 },
   linkedPillIcon: { fontSize: 14 },
   linkedPillText: { fontSize: 12, fontWeight: '600', flexShrink: 1 },
@@ -746,17 +724,17 @@ const styles = StyleSheet.create({
   completeBannerText: { fontSize: 16, fontWeight: '700', color: '#fff' },
   pastDesc: { fontSize: 14, lineHeight: 20, marginBottom: 16 },
   pastMeta: { fontSize: 12, marginTop: 12 },
-  // Habit link modal
-  linkHint: { fontSize: 13, lineHeight: 18, marginBottom: 16 },
-  linkAllBtn: { borderWidth: 1.5, borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 16 },
+  // Form & habit linking
+  noHabitsInForm: { fontSize: 13, marginBottom: 16, fontStyle: 'italic' },
+  linkAllBtn: { borderWidth: 1.5, borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 12 },
   linkAllBtnText: { fontSize: 15, fontWeight: '700' },
-  noHabitsText: { fontSize: 14, textAlign: 'center', marginTop: 20, marginBottom: 12 },
   habitLinkRow: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, borderWidth: 1.5, padding: 12, marginBottom: 10, gap: 10 },
   habitLinkIcon: { fontSize: 22 },
   habitLinkName: { flex: 1, fontSize: 15, fontWeight: '500' },
   habitLinkCheck: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
   habitLinkCheckMark: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
-  addHabitInModalBtn: { borderWidth: 1.5, borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 8, borderStyle: 'dashed' },
+  linkWarning: { fontSize: 13, marginBottom: 10, fontStyle: 'italic' },
+  addHabitInModalBtn: { borderWidth: 1.5, borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 4, marginBottom: 16, borderStyle: 'dashed' },
   addHabitInModalText: { fontSize: 15, fontWeight: '700' },
   // Icon picker
   iconPickerRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 },

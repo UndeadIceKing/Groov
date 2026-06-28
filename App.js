@@ -132,7 +132,7 @@ function AppNavigator() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.bg }]}>
-      <StatusBar style={settings.theme === 'dark' ? 'light' : 'dark'} />
+      <StatusBar style={activeIndex === 0 ? 'light' : (settings.theme === 'dark' ? 'light' : 'dark')} />
 
       <Animated.View
         style={[styles.screenRow, { transform: [{ translateX }] }]}

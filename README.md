@@ -1,4 +1,4 @@
-# MyApp
+# Groov
 
 A habit-tracking mobile app built with Expo and React Native. Users create daily or volume-based habits, track completion streaks, run personal challenges linked to specific habits, review historical progress, and receive AI-generated coaching and reflections powered by Claude Opus.
 
@@ -67,7 +67,7 @@ npm run web      # Browser
 ## Project Structure
 
 ```
-MyApp/
+Groov/
 ├── App.js                          # Root: SafeAreaProvider + AppProvider + AppNavigator
 ├── index.js                        # Expo entry — registerRootComponent(App)
 ├── app.json                        # Expo app config

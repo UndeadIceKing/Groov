@@ -1,6 +1,9 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import Anthropic from 'npm:@anthropic-ai/sdk'
 
+// Wildcard origin is intentional: CORS is a browser mechanism and does not apply to
+// native mobile clients. Supabase edge functions require this header for the OPTIONS
+// preflight even when called from a native app.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -16,19 +19,35 @@ function localDate(dateStr: string): Date {
   return d
 }
 
+function stripEmDashes(text: string): string {
+  return text
+    .replace(/\s*—\s*/g, ', ')
+    .replace(/\s*–\s*/g, ', ')
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // Reject oversized request bodies (period field only, no large payloads accepted)
+  const contentLength = Number(req.headers.get('content-length') ?? '0')
+  if (contentLength > 1024) {
+    return new Response(JSON.stringify({ error: 'Request body too large' }), {
+      status: 413,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+
   try {
-    const supabase = createClient(
+    // Validate user identity via their JWT using the anon key client.
+    // The service role client below is used for all DB operations instead.
+    const authClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+      { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } }
     )
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    const { data: { user }, error: authError } = await authClient.auth.getUser()
     if (authError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
@@ -36,14 +55,32 @@ Deno.serve(async (req: Request) => {
       })
     }
 
+    // Service role client — bypasses RLS; every query below explicitly filters by user.id
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    )
+
     const body = await req.json().catch(() => ({}))
-    const period: 'weekly' | 'monthly' = body.period === 'monthly' ? 'monthly' : 'weekly'
+
+    // Validate period: only the exact strings 'weekly' or 'monthly' are accepted
+    const rawPeriod = typeof body.period === 'string' ? body.period : ''
+    if (rawPeriod !== '' && rawPeriod !== 'weekly' && rawPeriod !== 'monthly') {
+      return new Response(JSON.stringify({ error: 'Invalid period. Must be "weekly" or "monthly".' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+    const period: 'weekly' | 'monthly' = rawPeriod === 'monthly' ? 'monthly' : 'weekly'
     const days = period === 'monthly' ? 30 : 7
 
-    // Prefer the client-supplied accountCreatedAt (derived from actual first usage),
-    // fall back to Supabase auth created_at only if not provided.
-    const accountCreatedStr: string = body.accountCreatedAt
-      ?? toDateOnly(user.created_at)
+    // Use the app-level accountCreatedAt if provided — it resets when the user clears data,
+    // whereas user.created_at is permanently fixed to the Supabase Auth registration date.
+    const clientAccountCreatedAt =
+      typeof body.accountCreatedAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.accountCreatedAt)
+        ? body.accountCreatedAt
+        : null
+    const accountCreatedStr: string = clientAccountCreatedAt ?? toDateOnly(user.created_at)
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -61,19 +98,37 @@ Deno.serve(async (req: Request) => {
     const msPerDay = 1000 * 60 * 60 * 24
     const accountActiveDays = Math.round((today.getTime() - effectiveStartDate.getTime()) / msPerDay) + 1
 
-    // Return cached reflection for this period_start if it exists
+    // Return cached reflection only if it was generated after accountCreatedAt,
+    // so a data reset invalidates any reflection that captured pre-reset data.
     const { data: cached } = await supabase
       .from('ai_reflections')
       .select('message, generated_at')
       .eq('user_id', user.id)
       .eq('period', period)
       .eq('period_start', periodStart)
+      .gte('generated_at', accountCreatedStr)
       .maybeSingle()
 
     if (cached?.message) {
       return new Response(
         JSON.stringify({ message: cached.message, cached: true, generatedAt: cached.generated_at }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Rate limit: prevent rapid-fire or concurrent generation requests
+    const { data: recentGen } = await supabase
+      .from('ai_reflections')
+      .select('generated_at')
+      .eq('user_id', user.id)
+      .gte('generated_at', new Date(Date.now() - 60_000).toISOString())
+      .limit(1)
+      .maybeSingle()
+
+    if (recentGen) {
+      return new Response(
+        JSON.stringify({ error: 'A reflection was just generated. Please wait a moment before trying again.' }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
@@ -151,12 +206,22 @@ Deno.serve(async (req: Request) => {
     const worst = [...habitStats].sort((a, b) => a.rate - b.rate)[0]
 
     const accountAgeLine = accountActiveDays < days
-      ? `Note: Account created ${accountCreatedStr} — only ${accountActiveDays} active day${accountActiveDays !== 1 ? 's' : ''} in this period (not the full ${days}). Some habits may have even fewer active days — see per-habit counts below.`
+      ? `Account created: ${accountCreatedStr} (only ${accountActiveDays} active day${accountActiveDays !== 1 ? 's' : ''} in this period, not the full ${days}). Some habits may have even fewer active days - see per-habit counts below.`
       : `Account active since: ${accountCreatedStr}`
 
-    const prompt = `You are a warm, insightful habit coach. Write a ${period} reflection summary (3–5 sentences) for a user based on the data below. Be specific and data-driven. Highlight the standout habit, address the one that needs attention, and give one concrete actionable tip. End on an encouraging note.
+    const timeSpanRule =
+      accountActiveDays <= 3
+        ? `DATA WINDOW: Only ${accountActiveDays} day${accountActiveDays !== 1 ? 's' : ''} of data. Base ALL observations on these ${accountActiveDays} days only. Do NOT mention weekly or monthly averages.`
+        : accountActiveDays <= 6
+        ? `DATA WINDOW: ${accountActiveDays} days of data. Reference only this period. Avoid implying weekly or monthly averages.`
+        : accountActiveDays <= 13
+        ? `DATA WINDOW: ${accountActiveDays} days of data. Weekly trends are appropriate; do not reference monthly patterns.`
+        : `DATA WINDOW: ${accountActiveDays} days of data. Weekly and multi-week trends are appropriate.`
 
-IMPORTANT: Each habit shows its own active days since it was created. Use each habit's own denominator — never compare completedDays against the full ${days}-day period if the habit was created more recently. Do not reference days before the account or any habit was created.
+    const prompt = `You are a warm, insightful habit coach. Write a ${period} reflection summary (3-5 sentences) for a user based on the data below. Be specific and data-driven. Highlight the standout habit, address the one that needs attention, and give one concrete actionable tip. End on an encouraging note. Never use em dashes (the long dash) or en dashes in your response - use commas, hyphens, or separate sentences instead.
+
+${timeSpanRule}
+IMPORTANT: Each habit shows its own active days since it was created. Use each habit's own denominator - never compare completedDays against the full ${days}-day period if the habit was created more recently. Do not reference days before the account or any habit was created.
 
 Period: ${periodStart} to ${todayStr}
 ${accountAgeLine}
@@ -164,8 +229,8 @@ Perfect days (all active habits done): ${perfectDays}/${accountActiveDays}
 
 Habits (completions / days that habit was active):
 ${habitStats.map((h) => {
-  const newTag = h.isNew ? ` — new habit, active since ${h.createdStr}` : ''
-  return `  • ${h.icon} ${h.name}: ${h.completedDays}/${h.activeDays} days (${h.rate}%)${newTag}`
+  const newTag = h.isNew ? ` (new habit, active since ${h.createdStr})` : ''
+  return `  * ${h.icon} ${h.name}: ${h.completedDays}/${h.activeDays} days (${h.rate}%)${newTag}`
 }).join('\n')}
 
 Most consistent: ${best.icon} ${best.name} at ${best.rate}% (${best.completedDays}/${best.activeDays} days)
@@ -180,8 +245,8 @@ Write the reflection:`
       messages: [{ role: 'user', content: prompt }],
     })
 
-    const message =
-      aiResponse.content[0].type === 'text' ? aiResponse.content[0].text.trim() : ''
+    const raw = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text.trim() : ''
+    const message = stripEmDashes(raw)
     const generatedAt = new Date().toISOString()
 
     await supabase.from('ai_reflections').upsert(
@@ -194,8 +259,8 @@ Write the reflection:`
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } catch (err) {
-    console.error('generate-reflection error:', err)
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
+    console.error('generate-reflection error:', (err as Error).message)
+    return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
