@@ -413,7 +413,21 @@ export default function HabitsScreen() {
         </View>
 
         {habits.length === 0 ? (
-          <EmptyCard emoji="🌱" title="No habits yet" body='Tap "+ Add" to create your first habit.' theme={theme} />
+          <EmptyCard
+            emoji="🌱"
+            title="Get into Rythm"
+            body="Add your first habit"
+            theme={theme}
+            style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}
+          >
+            <TouchableOpacity
+              style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
+              onPress={openAdd}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="add" size={28} color="#fff" />
+            </TouchableOpacity>
+          </EmptyCard>
         ) : (
           habits.map(habit => (
             <HabitRow
@@ -500,6 +514,20 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptyBody: { fontSize: 14, textAlign: 'center' },
+  addHabitBtn: {
+    alignSelf: 'center',
+    marginTop: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   sheetTitle: { fontSize: 20, fontWeight: 'bold' },
   sheetCloseBtn: { padding: 4 },

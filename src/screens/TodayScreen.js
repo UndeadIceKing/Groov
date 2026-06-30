@@ -323,8 +323,13 @@ export default function TodayScreen() {
           )}
 
           {habits.length === 0 ? (
-            <>
-              <EmptyCard emoji="🌱" title="No habits yet" body="Go to Habits tab to add your first habit." theme={theme} />
+            <EmptyCard
+              emoji="🌱"
+              title="Get into Rythm"
+              body="Add your first habit"
+              theme={theme}
+              style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}
+            >
               <TouchableOpacity
                 style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
                 onPress={async () => {
@@ -335,7 +340,7 @@ export default function TodayScreen() {
               >
                 <Ionicons name="add" size={28} color="#fff" />
               </TouchableOpacity>
-            </>
+            </EmptyCard>
           ) : (
             <>
               <View style={styles.sectionHeader}>

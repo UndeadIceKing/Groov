@@ -14,7 +14,7 @@ export default function EmptyCard({ emoji, title, body, theme, style, children }
 
 const styles = StyleSheet.create({
   card: {
-    borderWidth: 2, borderStyle: 'dashed', borderRadius: 16,
+    borderRadius: 16,
     padding: 36, alignItems: 'center', marginTop: 24,
   },
   emoji: { fontSize: 40, marginBottom: 12 },

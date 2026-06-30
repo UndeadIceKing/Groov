@@ -25,12 +25,18 @@ export function AuthProvider({ children }) {
     });
 
     // Background verification: round-trip to confirm the token is still valid.
-    // Only clear the session on a definitive auth rejection (401/403), not on network errors.
+    // Clear the session on definitive auth rejections (expired/revoked/deleted account),
+    // but not on transient network errors so offline users stay logged in.
     supabase.auth.getUser().then(({ data: { user }, error }) => {
       if (!isMounted) return;
       if (!user && error) {
         const code = error?.status;
-        if (code === 401 || code === 403) setSession(null);
+        const msg = error?.message ?? '';
+        const isAuthFailure = code === 401 || code === 403
+          || msg.includes('Refresh Token')
+          || msg.includes('refresh_token')
+          || msg.includes('Invalid JWT');
+        if (isAuthFailure) setSession(null);
       }
     }).catch(() => {
       // Network unavailable — keep the locally restored session as-is.
@@ -83,10 +89,10 @@ export function AuthProvider({ children }) {
   const deleteAccount = async () => {
     const userId = session?.user?.id;
     if (!userId) throw new Error('Not signed in');
-    // Grab the token BEFORE clearAll() — clearAll wipes AsyncStorage which is where
-    // Supabase stores the session, so fetching it afterwards returns null.
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
+    // Use the access token already in React state — it's kept fresh by onAuthStateChange
+    // (TOKEN_REFRESHED events). Calling getSession() here would risk returning a stale
+    // token if autoRefreshToken recently failed (e.g. stale Expo Go session).
+    const token = session?.access_token;
     // Delete all user data from database tables first
     await deleteAllUserData(userId);
     // Wipe local storage so any re-registration starts completely clean.
