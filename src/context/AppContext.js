@@ -134,10 +134,10 @@ function migrateChallenges(chs) {
 }
 
 export function AppProvider({ children }) {
-  const [habits, setHabits] = useState(DEFAULT_HABITS);
+  const [habits, setHabits] = useState([]);
   const [completions, setCompletions] = useState({});
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [challenges, setChallenges] = useState([STARTER_CHALLENGE]);
+  const [challenges, setChallenges] = useState([]);
   const [pastChallenges, setPastChallenges] = useState([]);
   const [hasOnboarded, setHasOnboarded] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -277,10 +277,35 @@ export function AppProvider({ children }) {
     if (!loaded || !userId) return;
     const sync = async () => {
       try {
-        // Detect account switch: if local data belongs to a different user, wipe it first.
-        const lastUserId = await loadData('lastUserId');
-        if (lastUserId !== null && lastUserId !== userId) {
+        const [lastUserId, accountWasDeleted] = await Promise.all([
+          loadData('lastUserId'),
+          loadData('accountWasDeleted'),
+        ]);
+
+        // An empty state to reset to when switching/deleting accounts. Resetting stateRef
+        // here (not just the React setters) ensures pushAllLocalData sends empty data
+        // synchronously before React re-renders propagate the setter calls.
+        const emptyState = { habits: [], completions: {}, settings: DEFAULT_SETTINGS, challenges: [], pastChallenges: [], dailySnapshot: {} };
+
+        if (accountWasDeleted) {
+          // Account was explicitly deleted — the previous user's storage was already wiped in
+          // AuthContext.deleteAccount(). Just clear the sentinel and reset in-memory state.
+          await saveData('accountWasDeleted', null);
+          stateRef.current = emptyState;
+          setHabits([]);
+          setCompletions({});
+          setChallenges([]);
+          setPastChallenges([]);
+          setDailySnapshot({});
+        } else if (lastUserId !== null && lastUserId !== userId) {
+          // Different user logged in on this device — wipe the previous user's local data.
           await storeClearAll();
+          stateRef.current = emptyState;
+          setHabits([]);
+          setCompletions({});
+          setChallenges([]);
+          setPastChallenges([]);
+          setDailySnapshot({});
         }
         await saveData('lastUserId', userId);
 

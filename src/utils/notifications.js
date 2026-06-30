@@ -9,9 +9,22 @@ Notifications.setNotificationHandler({
   }),
 });
 
+async function setupAndroidChannel() {
+  if (Platform.OS !== 'android') return;
+  try {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Groov',
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#4F46E5',
+    });
+  } catch {}
+}
+
 async function requestPermissions() {
   if (Platform.OS === 'web') return false;
   try {
+    await setupAndroidChannel();
     const { status } = await Notifications.requestPermissionsAsync();
     return status === 'granted';
   } catch (e) {
@@ -38,6 +51,8 @@ export async function scheduleHabitReminder(habit) {
   const identifier = `habit-${habit.id}`;
   await Notifications.cancelScheduledNotificationAsync(identifier).catch(() => {});
   if (!habit.reminder?.enabled) return;
+  const granted = await requestPermissions();
+  if (!granted) return;
   const { hour12, minute, ampm } = habit.reminder;
   let hour = hour12 % 12;
   if (ampm === 'PM') hour += 12;
@@ -50,7 +65,11 @@ export async function scheduleHabitReminder(habit) {
         sound: true,
         color: '#4F46E5',
       },
-      trigger: { hour, minute, repeats: true },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DAILY,
+        hour,
+        minute,
+      },
     });
   } catch (e) {
     console.warn('scheduleHabitReminder failed:', e);
@@ -79,7 +98,10 @@ export async function scheduleEveningHabitReminder(today, hour = 20, minute = 0)
         sound: true,
         color: '#4F46E5',
       },
-      trigger: { date: fireDate },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: fireDate,
+      },
     });
   } catch (e) {
     console.warn('scheduleEveningHabitReminder failed:', e);
@@ -138,11 +160,14 @@ export async function applyAllReminders(settings) {
       await Notifications.scheduleNotificationAsync({
         identifier: `reminder-${r.id}`,
         content: { title: `🔔 ${r.label}`, body: "Time to check your habits!", sound: true, color: '#4F46E5' },
-        trigger: { hour, minute: time.minute, repeats: true },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DAILY,
+          hour,
+          minute: time.minute,
+        },
       });
     } catch (e) {
       console.warn('applyAllReminders failed for', r.label, e);
     }
   }
 }
-

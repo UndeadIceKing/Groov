@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../utils/supabase';
 import { syncProfile, deleteAllUserData } from '../services/sync';
+import { clearAll, saveData } from '../utils/storage';
 
 const AuthContext = createContext(null);
 
@@ -9,31 +10,39 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // getUser() round-trips to Supabase servers to cryptographically verify the JWT,
-    // preventing a tampered locally-stored token from being silently trusted on startup.
-    supabase.auth.getUser().then(async ({ data: { user }, error }) => {
-      try {
-        if (user && !error) {
-          const { data: { session } } = await supabase.auth.getSession();
-          setSession(session);
-        } else {
-          setSession(null);
-        }
-      } catch {
-        setSession(null);
-      } finally {
+    let isMounted = true;
+
+    // Restore session from local storage immediately — no network needed.
+    // This keeps the user logged in when offline and avoids a loading screen on every launch.
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (isMounted) {
+        setSession(session);
         setLoading(false);
       }
     }).catch(() => {
-      setSession(null);
-      setLoading(false);
+      if (isMounted) setLoading(false);
+    });
+
+    // Background verification: round-trip to confirm the token is still valid.
+    // Only clear the session on a definitive auth rejection (401/403), not on network errors.
+    supabase.auth.getUser().then(({ data: { user }, error }) => {
+      if (!isMounted) return;
+      if (!user && error) {
+        const code = error?.status;
+        if (code === 401 || code === 403) setSession(null);
+      }
+    }).catch(() => {
+      // Network unavailable — keep the locally restored session as-is.
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+      if (isMounted) setSession(session);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signIn = async (email, password) => {
@@ -73,11 +82,18 @@ export function AuthProvider({ children }) {
   const deleteAccount = async () => {
     const userId = session?.user?.id;
     if (!userId) throw new Error('Not signed in');
-    // Delete all user data from database tables first
-    await deleteAllUserData(userId);
-    // Call Edge Function to delete the auth user (requires service role)
+    // Grab the token BEFORE clearAll() — clearAll wipes AsyncStorage which is where
+    // Supabase stores the session, so fetching it afterwards returns null.
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
+    // Delete all user data from database tables first
+    await deleteAllUserData(userId);
+    // Wipe local storage so any re-registration starts completely clean.
+    // Write the sentinel AFTER clearAll so it survives the wipe and AppContext
+    // can detect it on the next login and reset in-memory state too.
+    await clearAll();
+    await saveData('accountWasDeleted', true);
+    // Call Edge Function to delete the auth user (requires service role)
     const res = await fetch(
       `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/delete-account`,
       {
