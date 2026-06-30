@@ -563,6 +563,33 @@ export default function SettingsScreen() {
               </View>
               <Ionicons name="calendar-outline" size={20} color={theme.primary} />
             </TouchableOpacity>
+
+            {/* Lock dev tools */}
+            <TouchableOpacity
+              style={[styles.row, { borderBottomColor: 'transparent' }]}
+              onPress={() => {
+                Alert.alert(
+                  'Disable Dev Tools',
+                  'This will re-lock dev tools on this device. You\'ll need to tap the version label 7 times and enter the code to unlock again.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Disable', style: 'destructive', onPress: async () => {
+                        await SecureStore.deleteItemAsync(DEV_STORE_KEY).catch(() => {});
+                        setDevUnlocked(false);
+                      },
+                    },
+                  ]
+                );
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.rowLeft}>
+                <Text style={[styles.rowLabel, { color: theme.danger }]}>Disable Dev Tools</Text>
+                <Text style={[styles.rowSub, { color: theme.textMuted }]}>Re-locks dev tools on this device</Text>
+              </View>
+              <Ionicons name="lock-closed-outline" size={20} color={theme.danger} />
+            </TouchableOpacity>
           </Section>
         )}
 
