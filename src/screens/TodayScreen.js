@@ -4,6 +4,7 @@ import {
   TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import Svg, { Path, Rect } from 'react-native-svg';
+import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import HabitCard from '../components/HabitCard';
@@ -70,6 +71,7 @@ export default function TodayScreen() {
     getHabitCount, dateOffset, todayStr, accountCreatedAt, displayName, isDevEmail,
     completeChallengeImmediately, selectAllHabitsToday, resetAllHabitsToday,
     pendingChallengeRewards, clearPendingChallengeRewards,
+    setRequestedTab,
   } = useApp();
   const { user } = useAuth();
 
@@ -321,7 +323,19 @@ export default function TodayScreen() {
           )}
 
           {habits.length === 0 ? (
-            <EmptyCard emoji="🌱" title="No habits yet" body="Go to Habits tab to add your first habit." theme={theme} />
+            <>
+              <EmptyCard emoji="🌱" title="No habits yet" body="Go to Habits tab to add your first habit." theme={theme} />
+              <TouchableOpacity
+                style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
+                onPress={async () => {
+                  if (settings.hapticsEnabled) await mediumImpact();
+                  setRequestedTab(3);
+                }}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="add" size={28} color="#fff" />
+              </TouchableOpacity>
+            </>
           ) : (
             <>
               <View style={styles.sectionHeader}>
@@ -466,6 +480,20 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptyBody: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  addHabitBtn: {
+    alignSelf: 'center',
+    marginTop: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
   challengesSection: { marginTop: 24 },
   challengeMini: {
     borderRadius: 14, borderWidth: 1, padding: 14, marginTop: 8,
