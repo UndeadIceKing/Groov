@@ -12,12 +12,20 @@ export function AuthProvider({ children }) {
     // getUser() round-trips to Supabase servers to cryptographically verify the JWT,
     // preventing a tampered locally-stored token from being silently trusted on startup.
     supabase.auth.getUser().then(async ({ data: { user }, error }) => {
-      if (user && !error) {
-        const { data: { session } } = await supabase.auth.getSession();
-        setSession(session);
-      } else {
+      try {
+        if (user && !error) {
+          const { data: { session } } = await supabase.auth.getSession();
+          setSession(session);
+        } else {
+          setSession(null);
+        }
+      } catch {
         setSession(null);
+      } finally {
+        setLoading(false);
       }
+    }).catch(() => {
+      setSession(null);
       setLoading(false);
     });
 

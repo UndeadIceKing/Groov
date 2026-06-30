@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 12.0.0"
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -10,14 +11,18 @@
     "preview": {
       "distribution": "internal"
     },
-    "production": {}
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fdplqvebauivtlywornw.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkcGxxdmViYXVpdnRseXdvcm53Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1NDQwNDcsImV4cCI6MjA5NjEyMDA0N30.3cFPMtH3zyb_QAFOnZHU22e74_2P0nAbNN68GtZfsEY"
+      }
+    }
   },
   "submit": {
     "production": {
       "ios": {
-        "appleId": "beastlyiceking@gmail.com",
-        "ascAppId": "YOUR_APP_STORE_CONNECT_APP_ID",
-        "appleTeamId": "YOUR_APPLE_TEAM_ID"
+        "appleId": "beastlyiceking@gmail.com"
       },
       "android": {
         "serviceAccountKeyPath": "./google-service-account.json",

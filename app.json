@@ -1,8 +1,11 @@
 {
   "expo": {
     "name": "Groov",
-    "slug": "groov",
+    "slug": "MyApp",
     "version": "1.0.0",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "groov",
@@ -10,7 +13,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#4546AC"
     },
     "ios": {
       "supportsTablet": true,
@@ -22,10 +25,9 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#4546AC",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundImage": "./assets/android-icon-background.png"
       },
       "package": "com.beastlyiceking.groov",
       "versionCode": 1,
@@ -52,12 +54,14 @@
           "photosPermission": "Allow Groov to access your photos to set habit icons.",
           "cameraPermission": "Allow Groov to use the camera to take a habit icon photo."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {
         "projectId": "6039d704-fe72-4442-a7c7-81f44a1072e9"
       }
-    }
+    },
+    "owner": "isaaceast"
   }
 }

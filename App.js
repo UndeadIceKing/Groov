@@ -1,13 +1,49 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, Animated, PanResponder,
-  Dimensions, Platform, StyleSheet, Easing, useColorScheme,
+  Dimensions, Platform, StyleSheet, Easing, useColorScheme, ScrollView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
+// Surfaces crashes as readable text instead of a silent white screen in production,
+// where there is no Metro red-box and no console output to inspect.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('App crashed:', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: 60, paddingHorizontal: 20 }}>
+          <Text style={{ color: '#C00', fontWeight: '700', fontSize: 16, marginBottom: 12 }}>
+            App crashed
+          </Text>
+          <ScrollView>
+            <Text selectable style={{ color: '#000', fontSize: 13, marginBottom: 12 }}>
+              {String(this.state.error?.message || this.state.error)}
+            </Text>
+            <Text selectable style={{ color: '#666', fontSize: 11 }}>
+              {String(this.state.error?.stack || '')}
+            </Text>
+          </ScrollView>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { supabaseConfigError } from './src/utils/supabase';
 import { AppProvider, useApp } from './src/context/AppContext';
 import { themes } from './src/theme/colors';
 import AuthScreen from './src/screens/AuthScreen';
@@ -194,6 +230,10 @@ function AuthGate() {
   const scheme = useColorScheme();
   const theme = themes[scheme === 'dark' ? 'dark' : 'light'];
 
+  if (supabaseConfigError) {
+    throw new Error(supabaseConfigError);
+  }
+
   if (loading) {
     return <View style={{ flex: 1, backgroundColor: theme.bg }} />;
   }
@@ -211,11 +251,13 @@ function AuthGate() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <AuthGate />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <AuthGate />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
 
