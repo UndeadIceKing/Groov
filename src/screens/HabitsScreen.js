@@ -414,20 +414,13 @@ export default function HabitsScreen() {
 
         {habits.length === 0 ? (
           <EmptyCard
-            emoji="🌱"
-            title="Get into Rythm"
-            body="Add your first habit"
+            emoji="📋"
+            title="No Habits Yet"
+            body="Get started"
             theme={theme}
+            titleColor={theme.textMuted}
             style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}
-          >
-            <TouchableOpacity
-              style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
-              onPress={openAdd}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="add" size={28} color="#fff" />
-            </TouchableOpacity>
-          </EmptyCard>
+          />
         ) : (
           habits.map(habit => (
             <HabitRow

@@ -8,7 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import TimePicker from '../components/TimePicker';
-import { applyAllReminders, cancelNotification, scheduleHabitReminder, cancelEveningHabitReminder, sendTestNotification } from '../utils/notifications';
+import { applyAllReminders, cancelNotification, scheduleHabitReminder, sendTestNotification } from '../utils/notifications';
 import { lightImpact, mediumImpact } from '../utils/haptics';
 
 // Secret code for first-time dev unlock (tap version label 7× then enter)
@@ -22,11 +22,6 @@ function formatTime(t) {
   return `${hour12}:${String(minute).padStart(2, '0')} ${ampm}`;
 }
 
-function h24ToTimeParts(h24, minute) {
-  const ampm = h24 >= 12 ? 'PM' : 'AM';
-  const hour12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
-  return { hour12, minute: minute ?? 0, ampm };
-}
 
 function Row({ label, sublabel, right, theme, onPress }) {
   const content = (
@@ -160,7 +155,6 @@ export default function SettingsScreen() {
   const [timeModal, setTimeModal] = useState(null);
   const [editingLabel, setEditingLabel] = useState(null);
   const [labelDraft, setLabelDraft] = useState('');
-  const [eveningTimeModal, setEveningTimeModal] = useState(false);
 
   // Dev tools — locked to this specific device via SecureStore
   const [devUnlocked, setDevUnlocked] = useState(false);
@@ -237,26 +231,6 @@ export default function SettingsScreen() {
         }
       }
     }
-  };
-
-  const addReminder = () => {
-    if (reminders.length >= 6) {
-      Alert.alert('Limit reached', 'You can have up to 6 reminders.');
-      return;
-    }
-    if (settings.hapticsEnabled) lightImpact();
-    const now = new Date();
-    const h24 = now.getHours();
-    const minute = now.getMinutes();
-    const ampm = h24 >= 12 ? 'PM' : 'AM';
-    const hour12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
-    const next = [...reminders, {
-      id: Date.now().toString(),
-      label: `Reminder ${reminders.length + 1}`,
-      time: { hour12, minute, ampm },
-      enabled: true,
-    }];
-    updateReminders(next);
   };
 
   const removeReminder = (idx) => {
@@ -427,51 +401,6 @@ export default function SettingsScreen() {
             );
           })}
 
-          <TouchableOpacity
-            style={[styles.addReminderBtn, { borderColor: theme.primary }]}
-            onPress={addReminder}
-          >
-            <Ionicons name="add-circle-outline" size={18} color={theme.primary} />
-            <Text style={[styles.addReminderText, { color: theme.primary }]}>Add Reminder</Text>
-          </TouchableOpacity>
-
-          {/* Evening habit check notification */}
-          {(() => {
-            const evParts = h24ToTimeParts(settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
-            const evEnabled = !!(settings.eveningReminderEnabled && settings.notificationsEnabled);
-            return (
-              <View style={[styles.reminderBlock, { borderTopColor: theme.border }]}>
-                <View style={styles.reminderLabelRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.reminderLabel, { color: theme.text }]}>Evening Habit Reminder</Text>
-                    <Text style={[styles.reminderSublabel, { color: theme.textMuted }]}>
-                      {evEnabled
-                        ? `Fires at ${formatTime(evParts)} if habits aren't done`
-                        : 'Reminds you to finish habits in the evening'}
-                    </Text>
-                  </View>
-                  <Switch
-                    value={evEnabled}
-                    onValueChange={v => {
-                      updateSettings({ eveningReminderEnabled: v });
-                      if (!v) cancelEveningHabitReminder(new Date().toISOString().split('T')[0]);
-                    }}
-                    trackColor={{ false: theme.border, true: theme.primary }}
-                    thumbColor="#fff"
-                    style={{ opacity: settings.notificationsEnabled ? 1 : 0.4 }}
-                  />
-                </View>
-                <View style={styles.reminderActionsRow}>
-                  <TouchableOpacity
-                    style={[styles.timeBtn, { borderColor: theme.border, opacity: evEnabled ? 1 : 0.4 }]}
-                    onPress={() => evEnabled && setEveningTimeModal(true)}
-                  >
-                    <Text style={[styles.timeBtnText, { color: theme.primary }]}>{formatTime(evParts)}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            );
-          })()}
         </Section>
 
         {/* Feedback */}
@@ -764,24 +693,6 @@ export default function SettingsScreen() {
         />
       )}
 
-      {eveningTimeModal && (() => {
-        const evParts = h24ToTimeParts(settings.eveningReminderHour ?? 20, settings.eveningReminderMinute ?? 0);
-        return (
-          <TimePicker
-            visible={true}
-            hour12={evParts.hour12}
-            minute={evParts.minute}
-            ampm={evParts.ampm}
-            onClose={() => setEveningTimeModal(false)}
-            onSave={t => {
-              const h24 = t.ampm === 'PM' ? (t.hour12 % 12) + 12 : t.hour12 % 12;
-              updateSettings({ eveningReminderHour: h24, eveningReminderMinute: t.minute });
-              setEveningTimeModal(false);
-            }}
-            theme={theme}
-          />
-        );
-      })()}
     </SafeAreaView>
   );
 }

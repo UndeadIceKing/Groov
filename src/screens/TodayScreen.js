@@ -323,24 +323,42 @@ export default function TodayScreen() {
           )}
 
           {habits.length === 0 ? (
-            <EmptyCard
-              emoji="🌱"
-              title="Get into Rythm"
-              body="Add your first habit"
-              theme={theme}
-              style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}
-            >
-              <TouchableOpacity
-                style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
-                onPress={async () => {
-                  if (settings.hapticsEnabled) await mediumImpact();
-                  setRequestedTab(3);
-                }}
-                activeOpacity={0.85}
+            <>
+              <EmptyCard
+                emoji="🌱"
+                title="Get into Rythm"
+                body="Add your first habit"
+                theme={theme}
+                style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}
               >
-                <Ionicons name="add" size={28} color="#fff" />
-              </TouchableOpacity>
-            </EmptyCard>
+                <TouchableOpacity
+                  style={[styles.addHabitBtn, { backgroundColor: theme.primary }]}
+                  onPress={async () => {
+                    if (settings.hapticsEnabled) await mediumImpact();
+                    setRequestedTab(3);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="add" size={28} color="#fff" />
+                </TouchableOpacity>
+              </EmptyCard>
+              {effectiveChallenges.length === 0 && (
+                <TouchableOpacity
+                  style={[styles.challengeEmptyRow, { backgroundColor: theme.surface, borderColor: theme.border }]}
+                  onPress={async () => {
+                    if (settings.hapticsEnabled) await mediumImpact();
+                    setRequestedTab(2);
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={styles.challengeEmptyIcon}>🏆</Text>
+                  <View style={styles.challengeEmptyText}>
+                    <Text style={[styles.challengeEmptyTitle, { color: theme.text }]}>No challenges yet</Text>
+                    <Text style={[styles.challengeEmptyBody, { color: theme.textMuted }]}>Start your first challenge</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+            </>
           ) : (
             <>
               <View style={styles.sectionHeader}>
@@ -486,11 +504,10 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptyBody: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
   addHabitBtn: {
-    alignSelf: 'center',
-    marginTop: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    alignSelf: 'stretch',
+    marginTop: 8,
+    paddingVertical: 14,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
@@ -499,6 +516,14 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
+  challengeEmptyRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    borderRadius: 16, borderWidth: 1, padding: 16, marginTop: 20,
+  },
+  challengeEmptyIcon: { fontSize: 28 },
+  challengeEmptyText: { flex: 1 },
+  challengeEmptyTitle: { fontSize: 15, fontWeight: '700' },
+  challengeEmptyBody: { fontSize: 12, marginTop: 2 },
   challengesSection: { marginTop: 24 },
   challengeMini: {
     borderRadius: 14, borderWidth: 1, padding: 14, marginTop: 8,

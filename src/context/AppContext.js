@@ -47,17 +47,21 @@ const STARTER_CHALLENGE = {
   linkedHabitIds: ['1', '2', '3', '4'],
 };
 
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function todayStrWithOffset(offset) {
   const d = new Date();
   d.setDate(d.getDate() + offset);
-  return d.toISOString().split('T')[0];
+  return localDateStr(d);
 }
 
 function countBackStreak(startDate, isDoneOnDate) {
   let streak = 0;
   const date = new Date(startDate);
   while (true) {
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = localDateStr(date);
     if (isDoneOnDate(dateStr)) {
       streak++;
       date.setDate(date.getDate() - 1);
@@ -210,9 +214,13 @@ export function AppProvider({ children }) {
     if (ds) setDailySnapshot(ds);
     if (pc) setPastChallenges(pc);
     if (aca) {
-      setAccountCreatedAt(aca);
+      // Clamp a stored UTC-based date that landed in the future due to timezone mismatch
+      const localToday = localDateStr(new Date());
+      const clamped = aca > localToday ? localToday : aca;
+      if (clamped !== aca) saveData('accountCreatedAt', clamped);
+      setAccountCreatedAt(clamped);
     } else {
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDateStr(new Date());
       const completionDates = c ? Object.keys(c).sort() : [];
       const firstDate = completionDates.length > 0 ? completionDates[0] : today;
       setAccountCreatedAt(firstDate);
@@ -310,6 +318,26 @@ export function AppProvider({ children }) {
         await saveData('lastUserId', userId);
 
         const cloudData = await pullAllData(userId);
+
+        // One-time migration: if cloud only has the hardcoded legacy default habits
+        // (ids '1'–'4'), the user never customised anything — wipe them so the app
+        // starts clean. User-created habits always have Date.now() ids (13-digit ms
+        // timestamps), so this check can never fire for real user data.
+        const cloudHabits = cloudData.habits ?? [];
+        const hasOnlyLegacyDefaults =
+          cloudHabits.length > 0 &&
+          cloudHabits.every(h => ['1', '2', '3', '4'].includes(h.id));
+        if (hasOnlyLegacyDefaults) {
+          await deleteAllUserData(userId).catch(() => {});
+          stateRef.current = emptyState;
+          setHabits([]);
+          setCompletions({});
+          setChallenges([]);
+          setPastChallenges([]);
+          setDailySnapshot({});
+          return;
+        }
+
         const hasCloudData = cloudData.habits !== null && cloudData.habits.length > 0;
         if (hasCloudData) {
           setHabits(cloudData.habits);
@@ -594,16 +622,14 @@ export function AppProvider({ children }) {
   const completeOnboarding = useCallback(() => setHasOnboarded(true), []);
 
   const resetAll = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateStr(new Date());
     await storeClearAll();
     if (userId) await deleteAllUserData(userId).catch(e => console.warn('deleteAllUserData:', e));
     saveData('lastUserId', userId);
-    setHabits(DEFAULT_HABITS);
+    setHabits([]);
     setCompletions({});
     setSettings(DEFAULT_SETTINGS);
-    // STARTER_CHALLENGE is a module-level constant evaluated at import time.
-    // After a reset we need a fresh copy with the real current date, not the stale one.
-    setChallenges([{ ...STARTER_CHALLENGE, startDate: today, completedDays: [], completed: false }]);
+    setChallenges([]);
     setPastChallenges([]);
     setDailySnapshot({});
     setHasOnboarded(false);
@@ -685,28 +711,25 @@ export function AppProvider({ children }) {
   const getLastNDays = useCallback((n) => {
     const days = [];
 
-    // Use UTC date strings throughout — same format as todayStr() and completions keys.
-    // Never use setHours(0,0,0,0) here; that converts to local midnight which can produce
-    // a different UTC date string than toISOString() alone (breaks in UTC- timezones after midnight).
     const ref = new Date();
     ref.setDate(ref.getDate() + dateOffset);
-    const todayUTC = ref.toISOString().split('T')[0];
+    const todayLocal = localDateStr(ref);
 
     // Window starts at today-(n-1), but no earlier than account creation
     const rawStart = new Date(ref);
     rawStart.setDate(rawStart.getDate() - (n - 1));
-    let windowStartUTC = rawStart.toISOString().split('T')[0];
-    if (accountCreatedAt && accountCreatedAt > windowStartUTC) {
-      windowStartUTC = accountCreatedAt;
+    let windowStart = localDateStr(rawStart);
+    if (accountCreatedAt && accountCreatedAt > windowStart) {
+      windowStart = accountCreatedAt;
     }
 
     for (let i = 0; i < n; i++) {
-      // Iterate using UTC noon to avoid any DST-induced date boundary issues
-      const d = new Date(windowStartUTC + 'T12:00:00Z');
-      d.setUTCDate(d.getUTCDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
+      // Iterate using local noon to avoid DST-induced date boundary issues
+      const d = new Date(windowStart + 'T12:00:00');
+      d.setDate(d.getDate() + i);
+      const dateStr = localDateStr(d);
 
-      if (dateStr > todayUTC) {
+      if (dateStr > todayLocal) {
         days.push({ date: dateStr, completed: 0, total: 0, habits: [], future: true });
       } else {
         const dayCompletions = completions[dateStr] || {};
